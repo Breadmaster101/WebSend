@@ -297,8 +297,8 @@ function view(s, msg) {
   $('show').hidden = s !== 'offer' && s !== 'answer';
   $('pasteForm').hidden = s === 'answer';
   $('create').textContent = s === 'idle' ? 'Create connection code' : 'Start over';
-  $('step').textContent = s === 'offer' ? '1. Scan this with the other device, or send it the link.'
-    : 'Reply code: send this back. The sender scans it or pastes the link.';
+  $('step').textContent = s === 'offer' ? '1. Scan this with the other device, or send it the link or code.'
+    : 'Reply: send this back. The sender scans the QR or pastes the link or code.';
   $('pasteLabel').textContent = s === 'offer' ? "2. Paste their reply here (or scan their QR with this device's camera):"
     : 'Received a code? Paste it here:';
   $('sendText').disabled = s !== 'connected';
@@ -389,7 +389,15 @@ setInterval(() => {
 $('create').onclick = createCode;
 $('pasteForm').onsubmit = e => { e.preventDefault(); useCode($('paste').value); $('paste').value = ''; };
 $('paste').addEventListener('paste', () => setTimeout(() => { useCode($('paste').value); $('paste').value = ''; }));
-$('copy').onclick = () => navigator.clipboard ? navigator.clipboard.writeText($('link').value) : ($('link').select(), document.execCommand('copy'));
+// Copies the whole link, or just the code after '#'. Falls back to selecting it in the link box.
+const copy = codeOnly => {
+  const link = $('link').value, text = codeOnly ? myCode : link;
+  if (navigator.clipboard) return navigator.clipboard.writeText(text);
+  $('link').setSelectionRange(link.length - text.length, link.length);
+  document.execCommand('copy');
+};
+$('copy').onclick = () => copy(false);
+$('copyCode').onclick = () => copy(true);
 $('share').hidden = !navigator.share;
 $('share').onclick = () => navigator.share({ url: $('link').value }).catch(() => {});
 $('textForm').onsubmit = e => {
