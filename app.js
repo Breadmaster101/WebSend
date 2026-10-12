@@ -107,7 +107,16 @@ function opened() {
   connected = true;
   clearTimeout(timer);
   view('connected');
+  showSas(pc);
   offer([...out.values()].filter(o => o.state !== 'done' && o.state !== 'declined'));
+}
+
+// Both screens show the same number only if each device holds the key the other expected. A match rules out
+// anyone who swapped in their own code (answered a sound code first, or tampered with a message).
+async function showSas(p) {
+  const fps = [p.localDescription, p.remoteDescription].map(d => d.sdp.match(/a=fingerprint:\S+ (\S+)/)[1].toUpperCase()).sort();
+  const n = new DataView(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(fps.join()))).getUint32(0) % 1e6;
+  $('sas').textContent = `Check both screens show ${String(n).padStart(6, '0').replace(/^.../, '$& ')}`;
 }
 
 function dropped() {
@@ -304,6 +313,8 @@ function view(s, msg) {
   $('pasteLabel').textContent = s === 'offer' ? "2. Paste their reply here (or scan their QR with this device's camera):"
     : 'Received a code? Paste it here:';
   $('sendText').disabled = s !== 'connected';
+  $('sas').hidden = s !== 'connected';
+  if (s === 'connected') soundOff(); else if ($('show').hidden) stopSending();
   say(msg || {
     idle: 'Not connected', offer: 'Waiting for their reply…', answer: 'Waiting for the sender to enter your reply…',
     connected: 'Connected', handed: 'Code passed to your other WebSend tab. Switch to it; you can close this one.',
@@ -324,6 +335,7 @@ function showCode(code, type) {
   x.fillStyle = '#000';
   for (let r = 0; r < n; r++) for (let k = 0; k < n; k++) if (q.isDark(r, k)) x.fillRect((k + 4) * s, (r + 4) * s, s, s);
   view(type);
+  if (audio) broadcast(code);
 }
 
 function group(title) {
@@ -389,6 +401,7 @@ setInterval(() => {
 }, 500);
 
 $('create').onclick = createCode;
+$('sound').onclick = () => audio ? soundOff() : soundOn();
 $('pasteForm').onsubmit = e => { e.preventDefault(); useCode($('paste').value); $('paste').value = ''; };
 $('paste').addEventListener('paste', () => setTimeout(() => { useCode($('paste').value); $('paste').value = ''; }));
 // Copies the whole link, or just the code after '#'. Falls back to selecting it in the link box.
@@ -413,6 +426,157 @@ $('textForm').onsubmit = e => {
 addEventListener('beforeunload', e => {
   if (connected || [...out.values(), ...inc.values()].some(x => x.state === 'sending' || x.state === 'receiving')) e.preventDefault();
 });
+
+// ---------- Sound ----------
+// Optional way to pass the same code between devices in one room. The code is packed to bytes and sent
+// as 16-tone FSK after a sync tone. Odd and even nibbles use separate tone sets, so consecutive symbols
+// always differ and runs of one tone mark symbol boundaries. A SHA-256 check drops damaged frames.
+// Anyone in earshot can hear the code (harmless) or answer first; the number shown on connect catches that.
+const SYM = 0.025, HOP = 4, SYNC = 32;            // 25 ms symbols, decoded 4 times per symbol
+const tone = k => (30 + 2 * k) / SYM;             // 1200–3760 Hz, two FFT bins apart
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const check = async bytes => new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)).subarray(0, 4);
+let audio, mic, osc, sending = null, heard = 0, muted = 0, got;
+
+// Binary form of a code. Candidate tag: bit 0 = srflx; then a 16-byte mDNS UUID, 4-byte IPv4 (bit 1) or a string (bit 2).
+function pack(code) {
+  const [ufrag, pwd, fp, ...cands] = code.slice(1).split(',');
+  const b = [code.charCodeAt(0)], str = s => b.push(s.length, ...[...s].map(c => c.charCodeAt(0)));
+  str(ufrag);
+  str(pwd);
+  b.push(...unb64(fp));
+  for (const c of cands) {
+    const [ip, port] = c.slice(1).split('_'), srflx = +(c[0] === 's');
+    if (/^[\da-f-]{36}\.local$/.test(ip)) b.push(srflx, ...ip.slice(0, 36).replace(/-/g, '').match(/../g).map(h => parseInt(h, 16)));
+    else if (/^(\d+\.){3}\d+$/.test(ip)) b.push(2 | srflx, ...ip.split('.').map(Number));
+    else { b.push(4 | srflx); str(ip); }
+    b.push(port >> 8, port & 255);
+  }
+  return Uint8Array.from(b);
+}
+
+function unpack(b) {
+  let i = 0;
+  const take = n => b.subarray(i, i += n), str = () => String.fromCharCode(...take(b[i++]));
+  const kind = String.fromCharCode(b[i++]), parts = [str(), str(), b64(take(32))];
+  while (i < b.length) {
+    const t = b[i++];
+    const ip = t & 4 ? str() : t & 2 ? take(4).join('.')
+      : [...take(16)].map(x => x.toString(16).padStart(2, '0')).join('').replace(/(.{8})(.{4})(.{4})(.{4})/, '$1-$2-$3-$4-') + '.local';
+    const [hi, lo] = take(2);
+    parts.push((t & 1 ? 's' : 'h') + ip + '_' + (hi << 8 | lo));
+  }
+  return kind + parts.join(',');
+}
+
+// Frame: sync tone, then nibbles of [length, payload, 4-byte hash].
+async function frame(code) {
+  const p = pack(code);
+  if (p.length > 255) throw new Error('code too long for sound');
+  const bytes = [p.length, ...p, ...await check(p)];
+  return [SYNC, SYNC, SYNC, SYNC, ...bytes.flatMap(x => [x >> 4, x & 15]).map((n, i) => n + 16 * (i & 1))];
+}
+
+function play(tones) {
+  const t0 = audio.currentTime + 0.05, end = t0 + tones.length * SYM, g = audio.createGain();
+  const o = osc = audio.createOscillator();
+  tones.forEach((k, i) => o.frequency.setValueAtTime(tone(k), t0 + i * SYM));
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(0.3, t0 + 0.01); // ramps avoid clicks
+  g.gain.setValueAtTime(0.3, end - 0.01);
+  g.gain.linearRampToValueAtTime(0, end);
+  o.connect(g).connect(audio.destination);
+  o.start(t0);
+  o.stop(end);
+  muted = performance.now() + (end - audio.currentTime) * 1000 + 200; // don't decode our own sound or its echo
+  return new Promise(r => o.onended = r);
+}
+
+// Repeats the code until stopped, staying quiet while the other device is sending.
+async function broadcast(code) {
+  stopSending();
+  const me = sending = {};
+  const tones = await frame(code).catch(() => say('This code is too long to send by sound. Use the QR or link.'));
+  while (tones && sending === me) {
+    if (performance.now() - heard < 500) { await wait(200); continue; }
+    await play(tones);
+    await wait(1500 + Math.random() * 1500);
+  }
+}
+
+function stopSending() {
+  sending = null;
+  osc?.stop();
+}
+
+// Returns a function that takes microphone samples and calls onFrame(payload, hash) for each complete frame.
+function receiver(rate, onFrame) {
+  const n = Math.round(SYM * rate), ring = new Float32Array(n);
+  const coef = Array.from({ length: SYNC + 1 }, (_, k) => 2 * Math.cos(2 * Math.PI * tone(k) / rate));
+  let pos = 0, fresh = 0, run = -1, len = 0, last = -1, syms = null;
+  const commit = k => {
+    if (k === last) return; // a glitch split one symbol in two
+    last = k;
+    if (k === SYNC) return syms = [];
+    if (!syms || k >> 4 !== (syms.length & 1)) return syms = null;
+    syms.push(k & 15);
+    if (syms.length & 1 || syms.length >> 1 !== (syms[0] << 4 | syms[1]) + 5) return;
+    const b = Uint8Array.from({ length: syms.length >> 1 }, (_, i) => syms[2 * i] << 4 | syms[2 * i + 1]);
+    syms = null;
+    onFrame(b.subarray(1, -4), b.subarray(-4));
+  };
+  return samples => {
+    for (const s of samples) {
+      ring[pos] = s;
+      pos = (pos + 1) % n;
+      if (++fresh * HOP < n) continue;
+      fresh = 0;
+      const e = coef.map(c => { // Goertzel power of each tone over the last symbol
+        let a = 0, b = 0;
+        for (let i = 0; i < n; i++) { const t = ring[(pos + i) % n] + c * a - b; b = a; a = t; }
+        return a * a + b * b - c * a * b;
+      });
+      const max = Math.max(...e), sum = e.reduce((x, y) => x + y);
+      const k = performance.now() < muted || !(max * e.length > 8 * sum) ? -1 : e.indexOf(max);
+      if (k < 0) { run = -1; continue; }
+      heard = performance.now();
+      if (k !== run) { run = k; len = 0; }
+      if (++len === 2) commit(k);
+    }
+  };
+}
+
+async function soundOn() {
+  try {
+    audio = new AudioContext();
+    await audio.audioWorklet.addModule('tap.js');
+    mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    const tap = new AudioWorkletNode(audio, 'tap', { numberOfOutputs: 0 });
+    audio.createMediaStreamSource(mic).connect(tap);
+    const push = receiver(audio.sampleRate, async (p, h) => {
+      if ((await check(p)).join() !== h.join()) return;
+      const code = unpack(p);
+      if (code === myCode || code === got) return; // our own echo, or a repeat
+      got = code;
+      stopSending();
+      useCode(code);
+    });
+    tap.port.onmessage = e => push(e.data);
+  } catch {
+    soundOff();
+    return say("Couldn't use the microphone.");
+  }
+  $('sound').textContent = 'Stop sound';
+  if (!$('show').hidden) broadcast(myCode);
+}
+
+function soundOff() {
+  stopSending();
+  mic?.getTracks().forEach(t => t.stop());
+  audio?.close();
+  audio = mic = got = null;
+  $('sound').textContent = 'Connect by sound';
+}
 
 // ---------- Tab handoff ----------
 // Scanning a WebSend QR with the phone camera opens a new tab. That tab hands the code to an
