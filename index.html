@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>WebSend</title>
+<link rel="stylesheet" href="style.css">
+<script src="qrcode.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<h1>WebSend</h1>
+<p id="status" role="status"></p>
+
+<section id="hs">
+  <button id="create">Create connection code</button>
+  <div id="show">
+    <p id="step"></p>
+    <canvas id="qr" aria-label="Connection QR code"></canvas>
+    <input id="link" readonly aria-label="Connection link">
+    <button id="copy">Copy link</button> <button id="share">Share</button>
+  </div>
+  <form id="pasteForm">
+    <p><label for="paste" id="pasteLabel"></label></p>
+    <input id="paste" autocomplete="off" placeholder="Paste link or code">
+    <button>Connect</button>
+  </form>
+</section>
+
+<section id="main">
+  <div id="drop">
+    <p>Drop files or folders here</p>
+    <button id="pickFiles">Add files</button> <button id="pickFolder">Add folder</button>
+    <input type="file" id="files" multiple hidden>
+    <input type="file" id="folder" webkitdirectory hidden>
+  </div>
+  <form id="textForm">
+    <textarea id="text" rows="2" maxlength="100000" placeholder="Text or link to send"></textarea>
+    <button id="sendText">Send text</button>
+  </form>
+  <ul id="log"></ul>
+</section>
+</body>
+</html>
