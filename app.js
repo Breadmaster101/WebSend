@@ -107,7 +107,6 @@ function opened() {
   connected = true;
   clearTimeout(timer);
   view('connected');
-  keepAwake();
   offer([...out.values()].filter(o => o.state !== 'done' && o.state !== 'declined'));
 }
 
@@ -118,8 +117,6 @@ function dropped() {
   queue = [];
   drain();
   for (const o of out.values()) if (o.state === 'sending' || o.state === 'offered') { o.state = 'queued'; dirty.add(o); }
-  wake?.release();
-  wake = null;
   view('idle', 'Disconnected. Make a new code to reconnect. Unfinished transfers will resume.');
 }
 
@@ -130,8 +127,13 @@ function fail() {
   view('idle', "Couldn't connect directly. Same Wi-Fi usually works; some mobile and work networks block peer-to-peer. Make a new code to retry.");
 }
 
-const keepAwake = () => connected && navigator.wakeLock?.request('screen').then(l => wake = l, () => {});
-document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && keepAwake());
+// Keep the screen on while the page is visible; the browser drops the lock whenever it's hidden.
+const keepAwake = () => document.visibilityState === 'visible' && !wake && navigator.wakeLock?.request('screen')
+  .then(l => { wake = l; l.addEventListener('release', () => wake = null); }, () => {});
+document.addEventListener('visibilitychange', keepAwake);
+addEventListener('focus', keepAwake);
+addEventListener('pointerdown', keepAwake); // some browsers refuse the lock until the user interacts
+keepAwake();
 
 // ---------- Protocol ----------
 const send = m => dc?.readyState === 'open' && dc.send(JSON.stringify(m));
