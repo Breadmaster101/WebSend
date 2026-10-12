@@ -15,7 +15,7 @@ const fmt = b => { let i = 0; while (b >= 1024 && i < 4) { b /= 1024; i++; } ret
 const rid = () => Math.random().toString(36).slice(2);
 
 const out = new Map(), inc = new Map(), groups = new Map(), dirty = new Set();
-let pc, dc, myCode, timer, wake, cur = null, connected = false, queue = [], pumping = false, drain = () => {}, moved = 0;
+let pc, dc, myCode, timer, wake, cur = null, connected = false, queue = [], pumping = false, drain = () => {}, moved = 0, route = '';
 
 // ---------- Connection code <-> SDP ----------
 // Code: <kind><ufrag>,<pwd>,<fingerprint b64>,<candidates...>
@@ -108,6 +108,7 @@ function opened() {
   clearTimeout(timer);
   view('connected');
   showSas(pc);
+  showRoute(pc);
   offer([...out.values()].filter(o => o.state !== 'done' && o.state !== 'declined'));
 }
 
@@ -119,9 +120,22 @@ async function showSas(p) {
   $('sas').textContent = `Check both screens show ${String(n).padStart(6, '0').replace(/^.../, '$& ')}`;
 }
 
+// "direct" = device to device on the local network. "via router" = each side reached the other's public address,
+// so traffic loops through the router's NAT, which is often much slower (usually mDNS or client isolation on the Wi-Fi).
+async function showRoute(p) {
+  const s = await p.getStats();
+  let pair;
+  s.forEach(r => { if (r.type === 'transport' && r.selectedCandidatePairId) pair = s.get(r.selectedCandidatePairId); });
+  s.forEach(r => { if (!pair && r.type === 'candidate-pair' && (r.selected || r.nominated && r.state === 'succeeded')) pair = r; });
+  if (!pair || p !== pc) return;
+  const types = [s.get(pair.localCandidateId), s.get(pair.remoteCandidateId)].map(c => c?.candidateType);
+  route = types.some(t => t === 'srflx' || t === 'relay') ? ' · via router' : ' · direct';
+}
+
 function dropped() {
   if (!connected) return;
   connected = false;
+  route = '';
   cur = null;
   queue = [];
   drain();
@@ -396,7 +410,7 @@ let lastMoved = 0;
 setInterval(() => {
   dirty.forEach(paint);
   dirty.clear();
-  if (connected) say('Connected' + (moved > lastMoved ? ` · ${fmt((moved - lastMoved) * 2)}/s` : ''));
+  if (connected) say('Connected' + route + (moved > lastMoved ? ` · ${fmt((moved - lastMoved) * 2)}/s` : ''));
   lastMoved = moved;
 }, 500);
 
