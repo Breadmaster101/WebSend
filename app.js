@@ -283,7 +283,6 @@ function onChunk(buf) {
   dirty.add(it);
   if (it.folder) it.chain = it.chain.then(() => it.w.write(buf));
   else {
-    it.crc = crc32(buf, it.crc);
     it.parts.push(buf);
     // Fold chunks into a Blob regularly so the browser can page large files to disk.
     if ((it.pend += buf.byteLength) > 32 << 20) { it.parts = [new Blob(it.parts)]; it.pend = 0; }
@@ -328,54 +327,15 @@ async function saveAll(grp) {
   }
 }
 
-function saveZip(grp) {
+async function saveZip(grp) {
   const got = grp.items.filter(it => it.blob);
-  if (got.reduce((t, it) => t + it.size, 0) >= 0xffffffff || got.length > 0xfffe) return alert('Too large for a .zip (4 GB limit). Use Download all instead.');
   // Name the archive after the folder when everything was sent from one.
   const tops = new Set(got.map(it => it.path.split(/[/\\]/)[0]));
   const name = tops.size === 1 && /[/\\]/.test(got[0].path) ? [...tops][0] : 'websend';
-  const a = el('a', { href: URL.createObjectURL(zip(got)), download: name + '.zip' });
+  const files = got.map(it => ({ name: it.path.split(/[/\\]/).filter(s => s && s !== '.' && s !== '..').join('/') || 'file', input: it.blob }));
+  const a = el('a', { href: URL.createObjectURL(await downloadZip(files).blob()), download: name + '.zip' });
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 60e3);
-}
-
-// ---------- Zip (stored, no compression) ----------
-// Entries reference the received Blobs, so building the archive copies no file data.
-const CRC = Array.from({ length: 256 }, (_, n) => { for (let k = 0; k < 8; k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1; return n >>> 0; });
-function crc32(buf, crc = 0) {
-  const b = new Uint8Array(buf);
-  crc = ~crc;
-  for (let i = 0; i < b.length; i++) crc = CRC[(crc ^ b[i]) & 255] ^ (crc >>> 8);
-  return ~crc >>> 0;
-}
-
-function zip(items) {
-  const enc = new TextEncoder(), d = new Date(), parts = [], dir = [];
-  const time = d.getHours() << 11 | d.getMinutes() << 5 | d.getSeconds() >> 1;
-  const date = (d.getFullYear() - 1980) << 9 | (d.getMonth() + 1) << 5 | d.getDate();
-  let off = 0;
-  for (const it of items) {
-    const name = enc.encode(it.path.split(/[/\\]/).filter(s => s && s !== '.' && s !== '..').join('/') || 'file');
-    const h = new DataView(new ArrayBuffer(30)), c = new DataView(new ArrayBuffer(46));
-    h.setUint32(0, 0x04034b50, true); // local header
-    c.setUint32(0, 0x02014b50, true); // central directory entry: same fields, shifted 2 bytes
-    c.setUint16(4, 20, true);
-    for (const [v, o] of [[20, 4], [0x800, 6], [0, 8], [time, 10], [date, 12]]) { h.setUint16(o, v, true); c.setUint16(o + 2, v, true); } // 0x800: UTF-8 names
-    for (const [v, o] of [[it.crc ?? 0, 14], [it.size, 18], [it.size, 22]]) { h.setUint32(o, v, true); c.setUint32(o + 2, v, true); }
-    h.setUint16(26, name.length, true);
-    c.setUint16(28, name.length, true);
-    c.setUint32(42, off, true);
-    parts.push(h, name, it.blob);
-    dir.push(c, name);
-    off += 30 + name.length + it.size;
-  }
-  const end = new DataView(new ArrayBuffer(22));
-  end.setUint32(0, 0x06054b50, true);
-  end.setUint16(8, items.length, true);
-  end.setUint16(10, items.length, true);
-  end.setUint32(12, dir.reduce((t, x) => t + x.byteLength, 0), true);
-  end.setUint32(16, off, true);
-  return new Blob([...parts, ...dir, end], { type: 'application/zip' });
 }
 
 async function openWriter(dir, path) {

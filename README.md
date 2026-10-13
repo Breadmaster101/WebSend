@@ -18,7 +18,7 @@ If the connection drops, connect again in the same tabs. Unfinished transfers re
 
 ## Host
 
-Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, `app.js`, `sound.js`, `tap.js`, `style.css`, `qrcode.js`. No build step.
+Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, `app.js`, `sound.js`, `tap.js`, `style.css`, `qrcode.js`, `client-zip.js`. No build step.
 
 ## Security
 
@@ -44,3 +44,4 @@ Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `in
 - Connect by sound needs a working speaker and microphone on both devices. Very loud rooms, or a laptop whose microphone filters out tones, may need the QR code instead.
 
 `qrcode.js` is [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 1.4.4 by Kazuhiko Arase (MIT).
+`client-zip.js` is [client-zip](https://github.com/Touffy/client-zip) 2.5.1 by David Junger (MIT), its `worker.js` build.
