@@ -10,6 +10,8 @@ Open WebSend on both devices and pick how to connect:
 - **Show a QR code**: scan it with the other device's camera app (or send it the link). That device then shows a reply code: scan it back, or paste the reply link into the first device.
 - **I have a code**: paste a link or code you were sent.
 
+Methods can be mixed: on any code screen, **Also use sound** plays that device's code and listens for the other's. For example, scan a PC's QR code with your phone, then turn on sound on both and the phone chirps its reply to the PC.
+
 Once connected, check both screens show the same 6-digit number. Either side can then send files, folders or text. The receiver taps **Download**, **Save to folder…** (Chrome/Edge desktop) or **Decline**.
 
 If the connection drops, connect again in the same tabs. Unfinished transfers resume where they stopped.

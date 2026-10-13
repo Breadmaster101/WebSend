@@ -15,7 +15,7 @@ const fmt = b => { let i = 0; while (b >= 1024 && i < 4) { b /= 1024; i++; } ret
 const rid = () => Math.random().toString(36).slice(2);
 
 const out = new Map(), inc = new Map(), groups = new Map(), dirty = new Set();
-let pc, dc, myCode, timer, wake, screen, cur = null, connected = false, queue = [], pumping = false, drain = () => {}, moved = 0, route = '';
+let pc, dc, myCode, lastOffer, timer, wake, screen, cur = null, connected = false, queue = [], pumping = false, drain = () => {}, moved = 0, route = '';
 
 // ---------- Connection code <-> SDP ----------
 // Code: <kind><ufrag>,<pwd>,<fingerprint b64>,<candidates...>
@@ -86,6 +86,7 @@ async function makeOffer() {
 
 async function makeAnswer(offer) {
   newPeer();
+  try { lastOffer = Sound.norm(offer); } catch { lastOffer = offer; }
   const p = pc;
   await p.setRemoteDescription(decode(offer));
   await p.setLocalDescription();
@@ -380,7 +381,7 @@ function view(s, msg) {
   $('start').hidden = s !== 'start';
   $('flow').hidden = !c;
   $('main').hidden = $('hangup').hidden = s !== 'connected';
-  if (s !== 'sound') soundOff();
+  if (!c) soundOff();
   if (c) {
     const [labels, at] = c.steps || [[]];
     $('steps').hidden = !c.steps;
@@ -389,7 +390,9 @@ function view(s, msg) {
     $('hint').textContent = c.hint;
     $('show').hidden = !c.show;
     $('pasteForm').hidden = !c.paste;
-    $('listen').hidden = !c.listen;
+    $('listen').hidden = !c.listen && !audio;
+    $('soundToggle').hidden = !!c.listen;
+    $('soundToggle').textContent = audio ? 'Stop sound' : 'Also use sound';
     $('next').hidden = !c.next;
     $('next').textContent = c.next || '';
     $('alt').hidden = !c.alt;
@@ -409,6 +412,7 @@ function showCode(code, type) {
   $('qr').hidden = $('link').hidden = $('codeBtns').hidden = !code;
   view(type);
   if (!code) return;
+  if (rx) broadcast(code);
   const link = location.href.split('#')[0] + '#' + code;
   $('link').value = link;
   const q = qrcode(0, 'M');
@@ -487,6 +491,7 @@ setInterval(() => {
 $('goShow').onclick = createCode;
 $('goJoin').onclick = () => view('join');
 $('goSound').onclick = soundOn;
+$('soundToggle').onclick = soundToggle;
 $('back').onclick = () => screen === 'reply' ? view('offer') : reset();
 $('next').onclick = () => view('reply');
 $('alt').onclick = () => SCREENS[screen].alt[1]();
@@ -521,9 +526,11 @@ addEventListener('beforeunload', e => {
 });
 
 // ---------- Sound ----------
-// Both devices tap "Connect by sound". Each makes an offer and plays it (sound.js turns codes into tones),
+// Sound works two ways. On the start screen, both devices tap "Connect by sound": each makes an offer and plays it (sound.js turns codes into tones),
 // staying quiet while the other is talking. A device that hears an offer answers it by sound. When both
 // are offering, only the one whose own code sorts higher answers, so they never both answer.
+// On any code screen, "Also use sound" plays the code shown there and listens for the other device's,
+// so methods can be mixed: scan the QR code with a phone, then let the phone chirp its reply to the PC.
 // Anyone in earshot can hear the codes (harmless) or answer first; the number shown on connect catches that.
 const wait = ms => new Promise(r => setTimeout(r, ms));
 let audio, mic, rx, osc = [], sending = null, answered = null;
@@ -533,13 +540,34 @@ function soundMsg(msg, sub = '') {
   $('soundSub').textContent = sub;
 }
 
+// "Connect by sound" on the start screen: both devices tap it and find each other.
 async function soundOn() {
   view('sound');
+  if (!await startAudio()) return;
+  soundMsg('Getting ready…');
+  const code = await makeOffer();
+  await wait(Math.random() * 2000); // if both were tapped together, one usually starts first
+  if (code && rx && !answered && myCode === code) broadcast(code);
+}
+
+// "Also use sound" on a code screen: plays the code shown, and listens for the other device's.
+async function soundToggle() {
+  if (audio) { soundOff(); return view(screen); }
+  view(screen);
+  if (!await startAudio()) return;
+  view(screen);
+  if (SCREENS[screen].show && myCode) broadcast(myCode);
+  else soundMsg('Listening for the other device…', 'Turn on sound on it too.');
+}
+
+// Microphone in, speaker out. Returns false if the microphone can't be used.
+async function startAudio() {
   soundMsg('Allow the microphone if asked', 'It only listens for the other device, and stops once you are connected.');
+  $('listen').hidden = false;
   const ctx = audio = new AudioContext(); // made during the tap, so the browser lets it play sound
   try {
     mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-    if (audio !== ctx) return mic.getTracks().forEach(t => t.stop()); // left the screen meanwhile
+    if (audio !== ctx) { mic.getTracks().forEach(t => t.stop()); return false; } // left the screen meanwhile
     let src;
     try { src = audio.createMediaStreamSource(mic); } catch { // Firefox: must match the microphone's sample rate
       audio.close();
@@ -557,17 +585,16 @@ async function soundOn() {
     });
     tap.port.onmessage = e => rx?.push(e.data);
   } catch {
-    if (screen === 'sound') reset("Couldn't use the microphone. Allow it for this site in the browser's settings, or connect with a QR code instead.");
-    return;
+    const msg = "Couldn't use the microphone. Allow it for this site in the browser's settings, or connect with a QR code instead.";
+    if (screen === 'sound') reset(msg);
+    else if (audio === ctx) { soundOff(); view(screen); say(msg, true); }
+    return false;
   }
-  soundMsg('Getting ready…');
-  const code = await makeOffer();
-  await wait(Math.random() * 2000); // if both were tapped together, one usually starts first
-  if (code && rx && !answered && myCode === code) broadcast(code);
+  return true;
 }
 
 async function heard(code) {
-  if (screen !== 'sound') return;
+  if (!SCREENS[screen]) return;
   const offering = pc?.signalingState === 'have-local-offer' && myCode?.[0] === 'o';
   if (code[0] !== 'o') {
     if (!offering) return;
@@ -575,13 +602,14 @@ async function heard(code) {
     soundMsg('Heard the reply. Connecting…');
     return takeAnswer(code).catch(() => soundMsg("That reply didn't work", 'Still listening…'));
   }
-  if (code === answered || offering && code >= Sound.norm(myCode)) return; // a repeat, or it's their job to answer ours
+  if (code === answered || code === lastOffer || offering && code >= Sound.norm(myCode)) return; // a repeat, or it's their job to answer ours
   answered = code;
   stopSending();
   soundMsg('Heard the other device. Replying…');
   try {
     const reply = await makeAnswer(code);
-    if (reply && rx) broadcast(reply);
+    if (!reply || !rx) return;
+    if (screen === 'sound') broadcast(reply); else showCode(reply, 'answer'); // showCode plays it too
   } catch { answered = null; }
 }
 
@@ -595,7 +623,7 @@ async function broadcast(code) {
     await play(tones);
     if (sending !== me) return;
     soundMsg(offer ? 'Listening for the other device…' : 'Waiting for the other device to hear the reply…',
-      offer ? 'Tap “Connect by sound” on it too.' : '');
+      !offer ? '' : screen === 'sound' ? 'Tap “Connect by sound” on it too.' : 'Turn on sound on it too.');
     await wait(1000 + Math.random() * 2000);
   }
 }
