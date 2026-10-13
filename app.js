@@ -570,7 +570,14 @@ document.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
 // Back from a reply we made drops it and goes back to getting their invite.
 $('back').onclick = () => { const s = screen; if (s === 'reply') return view('offer'); reset(); if (s === 'answer') view('join'); };
 $('next').onclick = () => view('reply');
-$('hangup').onclick = () => { const p = pc; dropped('Disconnected.'); p?.close(); };
+$('hangup').onclick = () => { const p = pc; dropped('Disconnected.'); p?.close(); clearFiles(); };
+
+// A deliberate disconnect forgets every transfer, unlike a dropped connection, which keeps them to resume.
+function clearFiles() {
+  for (const it of inc.values()) { if (it.a) URL.revokeObjectURL(it.a.href); if (it.grp.zipOut?.href) URL.revokeObjectURL(it.grp.zipOut.href); }
+  out.clear(); inc.clear(); groups.clear(); dirty.clear();
+  $('log').replaceChildren();
+}
 $('pasteForm').onsubmit = e => { e.preventDefault(); useCode($('paste').value); $('paste').value = ''; };
 $('paste').addEventListener('paste', () => setTimeout(() => { useCode($('paste').value); $('paste').value = ''; }));
 // Copies the whole link, or just the code after '#'. Falls back to selecting it in the link box.
