@@ -410,7 +410,7 @@ const SCREENS = {
 };
 
 const stepper = (ol, at) => ol.replaceChildren(...STEPS.map((t, i) =>
-  el('li', { textContent: (i < at ? '✓ ' : '') + `${i + 1}. ${t}`, className: i === at ? 'on' : '' })));
+  el('li', { textContent: (i < at ? '✓ ' : '') + t, className: i === at ? 'on' : '' })));
 
 // Method buttons show their panel while pressed. Sound and Listen follow whether sound is running.
 function mark(btn, on) {
@@ -428,7 +428,6 @@ function view(s, msg) {
   $('start').hidden = s !== 'start';
   $('flow').hidden = !c;
   $('main').hidden = $('hangup').hidden = s !== 'connected';
-  if (s === 'connected') stepper($('steps3'), 2);
   if (!c) soundOff();
   if (c) {
     $('role').textContent = `You're ${c.role} the connection.`;
@@ -454,9 +453,9 @@ function view(s, msg) {
 
 // code = null shows the screen while the code is still being made.
 function showCode(code, type) {
-  $('making').hidden = !!code;
   $('qr').hidden = $('link').hidden = $('codeBtns').hidden = !code;
   view(type);
+  $('making').hidden = !!code || !document.querySelector('#give [data-m][aria-pressed="true"]');
   if (!code) return;
   if (rx) broadcast(code);
   const link = location.href.split('#')[0] + '#' + code;
@@ -564,7 +563,7 @@ $('goStart').onclick = createCode;
 $('goJoin').onclick = () => view('join');
 document.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
   const on = b.getAttribute('aria-pressed') !== 'true';
-  if (b.dataset.m !== 'sound' && b.dataset.m !== 'listen') mark(b, on);
+  if (b.dataset.m !== 'sound' && b.dataset.m !== 'listen') { mark(b, on); if ($('link').value) $('making').hidden = true; }
   else if (on) soundOn();
   else { soundOff(); view(screen); }
 });
