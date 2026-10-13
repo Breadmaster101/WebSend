@@ -283,6 +283,7 @@ function onChunk(buf) {
   dirty.add(it);
   if (it.folder) it.chain = it.chain.then(() => it.w.write(buf));
   else {
+    it.crc = crc32(buf, it.crc);
     it.parts.push(buf);
     // Fold chunks into a Blob regularly so the browser can page large files to disk.
     if ((it.pend += buf.byteLength) > 32 << 20) { it.parts = [new Blob(it.parts)]; it.pend = 0; }
@@ -297,12 +298,84 @@ function finish(it) {
     it.chain.then(() => it.w.close()).then(() => it.state = 'done', () => it.state = 'error').then(() => dirty.add(it));
     return;
   }
-  const a = el('a', { href: URL.createObjectURL(new Blob(it.parts)), download: it.path.replace(/[/\\]/g, '_'), textContent: 'Save' });
+  it.blob = new Blob(it.parts);
   it.parts = null;
-  it.note.after(' ', a);
-  a.click();
+  it.a = el('a', { href: URL.createObjectURL(it.blob), download: it.path.replace(/[/\\]/g, '_'), textContent: 'Save' });
+  it.note.after(' ', it.a);
+  if (!it.grp.zip) it.a.click();
   it.state = 'done';
   dirty.add(it);
+  groupDone(it.grp);
+}
+
+// Once nothing in a batch is still arriving, offer to save it all again, and build the .zip if one was asked for.
+function groupDone(grp) {
+  if (grp.items.some(it => it.state === 'receiving' || it.state === 'pending')) return;
+  if (!grp.items.some(it => it.blob)) return;
+  if (!grp.saveBtns) {
+    grp.saveBtns = el('div', {},
+      el('button', { textContent: 'Download all', onclick: () => saveAll(grp) }), ' ',
+      el('button', { textContent: 'Download all as .zip', onclick: () => saveZip(grp) }));
+    grp.head.after(grp.saveBtns);
+  }
+  if (grp.zip) { grp.zip = false; saveZip(grp); }
+}
+
+async function saveAll(grp) {
+  for (const it of grp.items) if (it.blob) {
+    it.a.click();
+    await new Promise(r => setTimeout(r, 250)); // browsers drop downloads fired in the same instant
+  }
+}
+
+function saveZip(grp) {
+  const got = grp.items.filter(it => it.blob);
+  if (got.reduce((t, it) => t + it.size, 0) >= 0xffffffff || got.length > 0xfffe) return alert('Too large for a .zip (4 GB limit). Use Download all instead.');
+  // Name the archive after the folder when everything was sent from one.
+  const tops = new Set(got.map(it => it.path.split(/[/\\]/)[0]));
+  const name = tops.size === 1 && /[/\\]/.test(got[0].path) ? [...tops][0] : 'websend';
+  const a = el('a', { href: URL.createObjectURL(zip(got)), download: name + '.zip' });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60e3);
+}
+
+// ---------- Zip (stored, no compression) ----------
+// Entries reference the received Blobs, so building the archive copies no file data.
+const CRC = Array.from({ length: 256 }, (_, n) => { for (let k = 0; k < 8; k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1; return n >>> 0; });
+function crc32(buf, crc = 0) {
+  const b = new Uint8Array(buf);
+  crc = ~crc;
+  for (let i = 0; i < b.length; i++) crc = CRC[(crc ^ b[i]) & 255] ^ (crc >>> 8);
+  return ~crc >>> 0;
+}
+
+function zip(items) {
+  const enc = new TextEncoder(), d = new Date(), parts = [], dir = [];
+  const time = d.getHours() << 11 | d.getMinutes() << 5 | d.getSeconds() >> 1;
+  const date = (d.getFullYear() - 1980) << 9 | (d.getMonth() + 1) << 5 | d.getDate();
+  let off = 0;
+  for (const it of items) {
+    const name = enc.encode(it.path.split(/[/\\]/).filter(s => s && s !== '.' && s !== '..').join('/') || 'file');
+    const h = new DataView(new ArrayBuffer(30)), c = new DataView(new ArrayBuffer(46));
+    h.setUint32(0, 0x04034b50, true); // local header
+    c.setUint32(0, 0x02014b50, true); // central directory entry: same fields, shifted 2 bytes
+    c.setUint16(4, 20, true);
+    for (const [v, o] of [[20, 4], [0x800, 6], [0, 8], [time, 10], [date, 12]]) { h.setUint16(o, v, true); c.setUint16(o + 2, v, true); } // 0x800: UTF-8 names
+    for (const [v, o] of [[it.crc ?? 0, 14], [it.size, 18], [it.size, 22]]) { h.setUint32(o, v, true); c.setUint32(o + 2, v, true); }
+    h.setUint16(26, name.length, true);
+    c.setUint16(28, name.length, true);
+    c.setUint32(42, off, true);
+    parts.push(h, name, it.blob);
+    dir.push(c, name);
+    off += 30 + name.length + it.size;
+  }
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, items.length, true);
+  end.setUint16(10, items.length, true);
+  end.setUint32(12, dir.reduce((t, x) => t + x.byteLength, 0), true);
+  end.setUint32(16, off, true);
+  return new Blob([...parts, ...dir, end], { type: 'application/zip' });
 }
 
 async function openWriter(dir, path) {
@@ -437,6 +510,7 @@ function addRow(grp, it) {
   it.bar = el('progress', { max: 1, value: 0 });
   grp.ul.append(el('li', {}, `${it.path} · ${fmt(it.size)} `, it.note, it.bar));
   grp.items.push(it);
+  it.grp = grp;
   grp.total += it.size;
   grp.head.textContent = `${grp.title}: ${grp.items.length} file${grp.items.length > 1 ? 's' : ''} · ${fmt(grp.total)}`;
   dirty.add(it);
@@ -447,7 +521,7 @@ function askAccept(g, items) {
   if (!grp) {
     grp = group('↓ Incoming');
     const b = (label, mode) => el('button', { textContent: label, onclick: () => respond(grp, mode) });
-    grp.btns = el('div', {}, b('Download', 'dl'), ' ', ...(window.showDirectoryPicker ? [b('Save to folder…', 'dir'), ' '] : []), b('Decline', 'no'));
+    grp.btns = el('div', {}, b('Download', 'dl'), ' ', b('Download as .zip', 'zip'), ' ', ...(window.showDirectoryPicker ? [b('Save to folder…', 'dir'), ' '] : []), b('Decline', 'no'));
     grp.head.after(grp.btns);
     groups.set(g, grp);
   }
@@ -459,6 +533,7 @@ async function respond(grp, mode) {
   let folder = null;
   if (mode === 'dir') try { folder = await showDirectoryPicker({ mode: 'readwrite' }); } catch { return; }
   const items = grp.items.filter(it => it.state === 'pending');
+  grp.zip = mode === 'zip';
   items.forEach(it => {
     Object.assign(it, { state: mode === 'no' ? 'declined' : 'receiving', folder, parts: [], pend: 0 });
     dirty.add(it);
