@@ -299,13 +299,16 @@ function finish(it) {
   }
   it.blob = new Blob(it.parts);
   it.parts = null;
-  it.a = el('a', { href: URL.createObjectURL(it.blob), download: it.path.replace(/[/\\]/g, '_'), textContent: 'Save' });
+  it.a = el('a', { href: URL.createObjectURL(it.blob), download: it.path.replace(/[/\\]/g, '_'), textContent: 'Save', onclick: savedOnce });
   it.note.after(' ', it.a);
   if (it.auto) it.a.click();
   it.state = 'done';
   dirty.add(it);
   zipReady(it.grp);
 }
+
+// Save links fire for automatic downloads too, so after the first one they offer to save again.
+function savedOnce() { if (!this.textContent.endsWith(' again')) this.textContent += ' again'; }
 
 async function saveEach(items) {
   for (const it of items) {
@@ -332,7 +335,7 @@ async function saveZip(grp, got) {
   const show = x => { if (grp.zipOut?.href) URL.revokeObjectURL(grp.zipOut.href); grp.zipOut ? grp.zipOut.replaceWith(x) : grp.btns.append(' ', x); grp.zipOut = x; };
   show(el('small', { textContent: 'Zipping…' }));
   try {
-    const a = el('a', { href: URL.createObjectURL(await downloadZip(files).blob()), download: name + '.zip', textContent: `Save ${name}.zip` });
+    const a = el('a', { href: URL.createObjectURL(await downloadZip(files).blob()), download: name + '.zip', textContent: `Save ${name}.zip`, onclick: savedOnce });
     show(a);
     a.click();
   } catch (e) { show(el('small', { textContent: 'Zip failed: ' + e.message })); }
