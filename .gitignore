@@ -1,4 +1,6 @@
 # Claude Code
 .claude/
+mockup/
+test/
 CLAUDE.md
 CLAUDE.local.md

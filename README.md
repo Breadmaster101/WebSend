@@ -4,13 +4,18 @@ Serverless peer-to-peer file and text sharing in the browser. Files go directly 
 
 ## Use
 
-Open WebSend on both devices and pick how to connect:
+Open WebSend on both devices. On one, tap **Start a connection**; on the other, **Join a connection**. Both then walk the same three steps:
 
-- **Connect by sound** (same room): tap it on both devices and allow the microphone. They chirp their codes to each other and connect by themselves, usually within 15–30 seconds. Keep them close with the volume up.
-- **Show a QR code**: scan it with the other device's camera app (or send it the link). That device then shows a reply code: scan it back, or paste the reply link into the first device.
-- **I have a code**: paste a link or code you were sent.
+1. **Invite**: the starting device gives its invite and the joining device gets it.
+2. **Reply**: the joining device gives a reply and the starting device gets it.
+3. **Share**: you're connected.
 
-Methods can be mixed: on any code screen, **Also use sound** plays that device's code and listens for the other's. For example, scan a PC's QR code with your phone, then turn on sound on both and the phone chirps its reply to the PC.
+Each step lets you pick how the code travels, and you can pick more than one:
+
+- **Giving**: **QR code** (scan it with the other device's camera app), **Link** (copy, share or send it through any app) or **Sound** (the device chirps the code).
+- **Getting**: **Camera** (scan the other device's QR code with this device's camera app), **Paste** (a link or code you were sent) or **Listen** (allow the microphone and hear the other device's chirps).
+
+The two steps can use different methods. For example, scan a PC's QR code with your phone, then pick Sound on the phone and Listen on the PC so the phone chirps its reply back. Sound works best with the devices close together and the volume up.
 
 Once connected, check both screens show the same 6-digit number. Either side can then send files, folders or text. The receiver ticks the files they want (all are ticked to start, with **Select all** to toggle) and taps **Download**, **Download as .zip** (keeps folder structure), **Save to folder…** (Chrome/Edge desktop) or **Decline**. Each file also has its own **Save** button. Unticked files stay available, and received ones can be downloaded again the same way.
 
@@ -41,7 +46,7 @@ Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `in
 - Peers behind strict NAT (some mobile carriers and corporate networks) can't connect directly. There's no relay by design. Same Wi-Fi always works.
 - Without **Save to folder…**, a received file is held in browser storage until saved, and folder paths are flattened into file names (`dir_sub_file.txt`).
 - Resume works while both tabs stay open; it isn't persisted across reloads.
-- Connect by sound needs a working speaker and microphone on both devices. Very loud rooms, or a laptop whose microphone filters out tones, may need the QR code instead.
+- Connect by sound needs a working speaker and microphone on both devices. Very loud rooms, or a laptop whose microphone filters out tones, may need another method instead.
 
 `qrcode.js` is [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 1.4.4 by Kazuhiko Arase (MIT).
 `client-zip.js` is [client-zip](https://github.com/Touffy/client-zip) 2.5.1 by David Junger (MIT), its `worker.js` build.

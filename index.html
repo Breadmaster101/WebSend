@@ -20,38 +20,61 @@
 
 <section id="start">
   <h2>Connect to another device</h2>
-  <p>Files go straight from one device to the other. Nothing is uploaded.</p>
+  <p>Files go straight from one device to the other using WebRTC without passing through a server.</p>
   <div>
-    <button id="goSound">
-      <b>Connect by sound</b>
-      <span>Devices in the same room. Tap this on both and they find each other.</span>
-    </button>
-    <button id="goShow">
-      <b>Show a QR code</b>
-      <span>Scan it with the other device's camera, or send it the link.</span>
+    <button id="goStart">
+      <b>Start a connection</b>
+      <span>You'll get an invite to give to the other device.</span>
     </button>
     <button id="goJoin">
-      <b>I have a code</b>
-      <span>Paste the link or code the other device gave you.</span>
+      <b>Join a connection</b>
+      <span>The other device already has an invite for you.</span>
     </button>
   </div>
 </section>
 
 <section id="flow" hidden>
   <button id="back">← Back</button>
+  <p id="role"></p>
   <ol id="steps"></ol>
   <h2 id="title"></h2>
   <p id="hint"></p>
 
-  <div id="show">
+  <div id="give">
+    <p>Pick one or more:</p>
+    <button data-m="qr">QR code</button>
+    <button data-m="link">Link</button>
+    <button data-m="sound">Sound</button>
     <p id="making">Making a code…</p>
-    <canvas id="qr" aria-label="Connection QR code"></canvas>
-    <div id="codeBtns">
-      <button id="copy">Copy link</button>
-      <button id="copyCode">Copy code</button>
-      <button id="share">Share…</button>
+    <div data-p="qr" hidden>
+      <canvas id="qr" aria-label="Connection QR code"></canvas>
+      <p>Scan it with the other device's camera app.</p>
     </div>
-    <input id="link" readonly aria-label="Connection link">
+    <div data-p="link" hidden>
+      <div id="codeBtns">
+        <button id="copy">Copy link</button>
+        <button id="copyCode">Copy code</button>
+        <button id="share">Share…</button>
+      </div>
+      <input id="link" readonly aria-label="Connection link">
+      <p>Send it through any app you like, then open it on the other device.</p>
+    </div>
+  </div>
+
+  <div id="get">
+    <p>Pick one or more:</p>
+    <button data-m="camera">Camera</button>
+    <button data-m="paste">Paste</button>
+    <button data-m="listen">Listen</button>
+    <div data-p="camera" hidden>
+      <p>Open the camera app on this device and point it at the QR code on the other one. It opens here by itself.</p>
+    </div>
+    <div data-p="paste" hidden>
+      <form id="pasteForm">
+        <input id="paste" autocomplete="off" placeholder="Paste link or code" aria-label="Link or code">
+        <button>Connect</button>
+      </form>
+    </div>
   </div>
 
   <div id="listen">
@@ -59,17 +82,11 @@
     <p id="soundSub"></p>
   </div>
 
-  <form id="pasteForm">
-    <input id="paste" autocomplete="off" placeholder="Paste link or code" aria-label="Link or code">
-    <button>Connect</button>
-  </form>
-
-  <button id="soundToggle"></button>
   <button id="next"></button>
-  <button id="alt"></button>
 </section>
 
 <section id="main" hidden>
+  <ol id="steps3"></ol>
   <div id="sas"></div>
   <div id="drop">
     <p>Drop files or folders here</p>
