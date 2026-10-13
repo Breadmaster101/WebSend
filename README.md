@@ -4,19 +4,19 @@ Serverless peer-to-peer file and text sharing in the browser. Files go directly 
 
 ## Use
 
-1. Device A: add files (optional, they can be added later), tap **Create connection code**.
-2. Device B: scan the QR with the camera, or open the link. B shows a **reply code**.
-3. Device A: scan B's reply QR with the camera, or paste the reply link. You're connected.
-4. Check both screens show the same 6-digit number.
-5. Either side can send files, folders or text. The receiver taps **Download**, **Save to folder…** (Chrome/Edge desktop) or **Decline**.
+Open WebSend on both devices and pick how to connect:
 
-**By sound:** in the same room, tap **Connect by sound** on both devices, then **Create connection code** on one. The codes are exchanged as tones (about 5 seconds each way). Allow the microphone when asked.
+- **Connect by sound** (same room): tap it on both devices and allow the microphone. They chirp their codes to each other and connect by themselves, usually within 15–30 seconds. Keep them close with the volume up.
+- **Show a QR code**: scan it with the other device's camera app (or send it the link). That device then shows a reply code: scan it back, or paste the reply link into the first device.
+- **I have a code**: paste a link or code you were sent.
 
-If the connection drops, make a new code in the same tabs. Unfinished transfers resume where they stopped.
+Once connected, check both screens show the same 6-digit number. Either side can then send files, folders or text. The receiver taps **Download**, **Save to folder…** (Chrome/Edge desktop) or **Decline**.
+
+If the connection drops, connect again in the same tabs. Unfinished transfers resume where they stopped.
 
 ## Host
 
-Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, `app.js`, `tap.js`, `style.css`, `qrcode.js`. No build step.
+Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, `app.js`, `sound.js`, `tap.js`, `style.css`, `qrcode.js`. No build step.
 
 ## Security
 
@@ -28,10 +28,17 @@ Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `in
 - **Strict Content-Security-Policy:** only the page's own scripts run, and there are no third-party requests.
 - **One third party, optional:** Google's public STUN server tells each device its public address so devices on different networks can connect. It sees IP addresses only, never data. Set `ICE = []` in `app.js` for same-network-only with zero third parties.
 
+## Sound
+
+`sound.js` is a small acoustic modem: 16-tone FSK at 25 ms a symbol (1–5 kHz), tone sets that rotate so room echo doesn't blur neighbouring symbols, two-tone sync chords, and Reed–Solomon error correction. Each device repeats its code, and the listener adds up what it heard across repeats, so a noisy room costs another round instead of failing. A code takes about 6–7 seconds to send.
+
+`node test/sound-sim.js` plays frames through a simulated room (echo, noise, mismatched sample rates and clocks) into the decoder. `test/fake-air-inject.js` wires two browser tabs' speakers to each other's microphones so the whole sound handshake can be tried without hardware.
+
 ## Limits
 
 - Peers behind strict NAT (some mobile carriers and corporate networks) can't connect directly. There's no relay by design. Same Wi-Fi always works.
 - Without **Save to folder…**, a received file is held in browser storage until saved, and folder paths are flattened into file names (`dir_sub_file.txt`).
 - Resume works while both tabs stay open; it isn't persisted across reloads.
+- Connect by sound needs a working speaker and microphone on both devices. Very loud rooms, or a laptop whose microphone filters out tones, may need the QR code instead.
 
 `qrcode.js` is [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 1.4.4 by Kazuhiko Arase (MIT).

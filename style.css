@@ -11,3 +11,8 @@ li li { margin: .25rem 0 .25rem 1rem; }
 progress { width: 100%; }
 pre { white-space: pre-wrap; margin: .25rem 0; }
 [hidden] { display: none !important; }
+#start button { display: block; width: 100%; text-align: left; padding: .5rem 1rem; }
+#start button span { display: block; }
+#steps .on { font-weight: bold; }
+#status.alert { font-weight: bold; }
+#sas b { display: block; font-size: 2rem; }

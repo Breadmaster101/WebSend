@@ -8,29 +8,67 @@
 <title>WebSend</title>
 <link rel="stylesheet" href="style.css">
 <script src="qrcode.js" defer></script>
+<script src="sound.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body>
-<h1>WebSend</h1>
-<p id="status" role="status"></p>
-<p id="sas" hidden></p>
+<header>
+  <h1>WebSend</h1>
+  <p id="status" role="status"></p>
+</header>
 
-<section id="hs">
-  <button id="create">Create connection code</button> <button id="sound">Connect by sound</button>
-  <div id="show">
-    <p id="step"></p>
-    <canvas id="qr" aria-label="Connection QR code"></canvas>
-    <input id="link" readonly aria-label="Connection link">
-    <button id="copy">Copy link</button> <button id="copyCode">Copy code</button> <button id="share">Share</button>
+<section id="start">
+  <h2>Connect to another device</h2>
+  <p>Files go straight from one device to the other. Nothing is uploaded.</p>
+  <div>
+    <button id="goSound">
+      <b>Connect by sound</b>
+      <span>Devices in the same room. Tap this on both and they find each other.</span>
+    </button>
+    <button id="goShow">
+      <b>Show a QR code</b>
+      <span>Scan it with the other device's camera, or send it the link.</span>
+    </button>
+    <button id="goJoin">
+      <b>I have a code</b>
+      <span>Paste the link or code the other device gave you.</span>
+    </button>
   </div>
-  <form id="pasteForm">
-    <p><label for="paste" id="pasteLabel"></label></p>
-    <input id="paste" autocomplete="off" placeholder="Paste link or code">
-    <button>Connect</button>
-  </form>
 </section>
 
-<section id="main">
+<section id="flow" hidden>
+  <button id="back">← Back</button>
+  <ol id="steps"></ol>
+  <h2 id="title"></h2>
+  <p id="hint"></p>
+
+  <div id="show">
+    <p id="making">Making a code…</p>
+    <canvas id="qr" aria-label="Connection QR code"></canvas>
+    <div id="codeBtns">
+      <button id="copy">Copy link</button>
+      <button id="copyCode">Copy code</button>
+      <button id="share">Share…</button>
+    </div>
+    <input id="link" readonly aria-label="Connection link">
+  </div>
+
+  <div id="listen">
+    <p id="soundMsg" aria-live="polite"></p>
+    <p id="soundSub"></p>
+  </div>
+
+  <form id="pasteForm">
+    <input id="paste" autocomplete="off" placeholder="Paste link or code" aria-label="Link or code">
+    <button>Connect</button>
+  </form>
+
+  <button id="next"></button>
+  <button id="alt"></button>
+</section>
+
+<section id="main" hidden>
+  <div id="sas"></div>
   <div id="drop">
     <p>Drop files or folders here</p>
     <button id="pickFiles">Add files</button> <button id="pickFolder">Add folder</button>
@@ -41,7 +79,9 @@
     <textarea id="text" rows="2" maxlength="100000" placeholder="Text or link to send"></textarea>
     <button id="sendText">Send text</button>
   </form>
-  <ul id="log"></ul>
 </section>
+
+<ul id="log"></ul>
+<button id="hangup" hidden>Disconnect</button>
 </body>
 </html>
