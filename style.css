@@ -9,6 +9,7 @@ ul { list-style: none; padding: 0; }
 li { margin: .75rem 0; overflow-wrap: anywhere; }
 li li { margin: .25rem 0 .25rem 1rem; }
 progress { width: 100%; }
+input[type=checkbox] { width: auto; min-height: 0; margin: 0 .5rem 0 0; vertical-align: middle; }
 pre { white-space: pre-wrap; margin: .25rem 0; }
 [hidden] { display: none !important; }
 #start button { display: block; width: 100%; text-align: left; padding: .5rem 1rem; }

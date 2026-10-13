@@ -12,7 +12,7 @@ Open WebSend on both devices and pick how to connect:
 
 Methods can be mixed: on any code screen, **Also use sound** plays that device's code and listens for the other's. For example, scan a PC's QR code with your phone, then turn on sound on both and the phone chirps its reply to the PC.
 
-Once connected, check both screens show the same 6-digit number. Either side can then send files, folders or text. The receiver taps **Download**, **Download as .zip** (keeps folder structure), **Save to folder…** (Chrome/Edge desktop) or **Decline**. Once a batch has arrived, **Download all** and **Download all as .zip** save it again.
+Once connected, check both screens show the same 6-digit number. Either side can then send files, folders or text. The receiver ticks the files they want (all are ticked to start, with **Select all** to toggle) and taps **Download**, **Download as .zip** (keeps folder structure), **Save to folder…** (Chrome/Edge desktop) or **Decline**. Each file also has its own **Save** button. Unticked files stay available, and received ones can be downloaded again the same way.
 
 If the connection drops, connect again in the same tabs. Unfinished transfers resume where they stopped.
 

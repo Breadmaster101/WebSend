@@ -301,41 +301,41 @@ function finish(it) {
   it.parts = null;
   it.a = el('a', { href: URL.createObjectURL(it.blob), download: it.path.replace(/[/\\]/g, '_'), textContent: 'Save' });
   it.note.after(' ', it.a);
-  if (!it.grp.zip) it.a.click();
+  if (it.auto) it.a.click();
   it.state = 'done';
   dirty.add(it);
-  groupDone(it.grp);
+  zipReady(it.grp);
 }
 
-// Once nothing in a batch is still arriving, offer to save it all again, and build the .zip if one was asked for.
-function groupDone(grp) {
-  if (grp.items.some(it => it.state === 'receiving' || it.state === 'pending')) return;
-  if (!grp.items.some(it => it.blob)) return;
-  if (!grp.saveBtns) {
-    grp.saveBtns = el('div', {},
-      el('button', { textContent: 'Download all', onclick: () => saveAll(grp) }), ' ',
-      el('button', { textContent: 'Download all as .zip', onclick: () => saveZip(grp) }));
-    grp.head.after(grp.saveBtns);
-  }
-  if (grp.zip) { grp.zip = false; saveZip(grp); }
-}
-
-async function saveAll(grp) {
-  for (const it of grp.items) if (it.blob) {
+async function saveEach(items) {
+  for (const it of items) {
     it.a.click();
     await new Promise(r => setTimeout(r, 250)); // browsers drop downloads fired in the same instant
   }
 }
 
-async function saveZip(grp) {
-  const got = grp.items.filter(it => it.blob);
+// Zips the files picked for it once none of them are still arriving.
+function zipReady(grp) {
+  const set = grp.zipSet;
+  if (!set || set.some(it => it.state === 'receiving')) return;
+  grp.zipSet = null;
+  saveZip(grp, set.filter(it => it.blob));
+}
+
+async function saveZip(grp, got) {
+  if (!got.length) return;
   // Name the archive after the folder when everything was sent from one.
   const tops = new Set(got.map(it => it.path.split(/[/\\]/)[0]));
   const name = tops.size === 1 && /[/\\]/.test(got[0].path) ? [...tops][0] : 'websend';
   const files = got.map(it => ({ name: it.path.split(/[/\\]/).filter(s => s && s !== '.' && s !== '..').join('/') || 'file', input: it.blob }));
-  const a = el('a', { href: URL.createObjectURL(await downloadZip(files).blob()), download: name + '.zip' });
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 60e3);
+  // The archive stays as a link too: browsers may block a download the page starts by itself.
+  const show = x => { if (grp.zipOut?.href) URL.revokeObjectURL(grp.zipOut.href); grp.zipOut ? grp.zipOut.replaceWith(x) : grp.btns.append(' ', x); grp.zipOut = x; };
+  show(el('small', { textContent: 'Zipping…' }));
+  try {
+    const a = el('a', { href: URL.createObjectURL(await downloadZip(files).blob()), download: name + '.zip', textContent: `Save ${name}.zip` });
+    show(a);
+    a.click();
+  } catch (e) { show(el('small', { textContent: 'Zip failed: ' + e.message })); }
 }
 
 async function openWriter(dir, path) {
@@ -468,44 +468,68 @@ function group(title) {
 function addRow(grp, it) {
   it.note = el('small');
   it.bar = el('progress', { max: 1, value: 0 });
-  grp.ul.append(el('li', {}, `${it.path} · ${fmt(it.size)} `, it.note, it.bar));
+  const li = el('li', {}, `${it.path} · ${fmt(it.size)} `, it.note, it.bar);
+  grp.ul.append(li);
   grp.items.push(it);
   it.grp = grp;
   grp.total += it.size;
   grp.head.textContent = `${grp.title}: ${grp.items.length} file${grp.items.length > 1 ? 's' : ''} · ${fmt(grp.total)}`;
   dirty.add(it);
+  return li;
 }
 
+// Incoming files are ticked by default. The buttons act on the ticked ones: a file not received yet
+// is accepted, and one already received is saved again.
 function askAccept(g, items) {
   let grp = groups.get(g);
   if (!grp) {
     grp = group('↓ Incoming');
-    const b = (label, mode) => el('button', { textContent: label, onclick: () => respond(grp, mode) });
-    grp.btns = el('div', {}, b('Download', 'dl'), ' ', b('Download as .zip', 'zip'), ' ', ...(window.showDirectoryPicker ? [b('Save to folder…', 'dir'), ' '] : []), b('Decline', 'no'));
+    const b = (label, mode) => el('button', { textContent: label, onclick: () => act(grp, mode) });
+    grp.all = el('input', { type: 'checkbox', checked: true, onchange: () => grp.items.forEach(it => it.box.checked = grp.all.checked) });
+    grp.btns = el('div', {}, el('label', {}, grp.all, ' Select all'), el('br'),
+      b('Download', 'dl'), ' ', b('Download as .zip', 'zip'), ' ', ...(window.showDirectoryPicker ? [b('Save to folder…', 'dir'), ' '] : []), b('Decline', 'no'));
     grp.head.after(grp.btns);
     groups.set(g, grp);
   }
-  items.forEach(it => addRow(grp, it));
-  grp.btns.hidden = false;
+  for (const it of items) {
+    it.box = el('input', { type: 'checkbox', checked: true, onchange: () => syncAll(grp) });
+    it.save = el('button', { textContent: 'Save', onclick: () => respond([it], 'dl') });
+    addRow(grp, it).prepend(it.box);
+    it.note.after(' ', it.save);
+  }
+  syncAll(grp);
 }
 
-async function respond(grp, mode) {
+function syncAll(grp) {
+  const n = grp.items.filter(it => it.box.checked).length;
+  grp.all.checked = n === grp.items.length;
+  grp.all.indeterminate = n > 0 && n < grp.items.length;
+}
+
+async function act(grp, mode) {
+  const sel = grp.items.filter(it => it.box.checked);
+  const pending = sel.filter(it => it.state === 'pending');
+  if (pending.length && !await respond(pending, mode)) return;
+  if (mode === 'dl') saveEach(sel.filter(it => it.blob));
+  if (mode === 'zip') { grp.zipSet = sel; zipReady(grp); }
+}
+
+async function respond(items, mode) {
   let folder = null;
-  if (mode === 'dir') try { folder = await showDirectoryPicker({ mode: 'readwrite' }); } catch { return; }
-  const items = grp.items.filter(it => it.state === 'pending');
-  grp.zip = mode === 'zip';
+  if (mode === 'dir') try { folder = await showDirectoryPicker({ mode: 'readwrite' }); } catch { return false; }
   items.forEach(it => {
-    Object.assign(it, { state: mode === 'no' ? 'declined' : 'receiving', folder, parts: [], pend: 0 });
+    Object.assign(it, { state: mode === 'no' ? 'declined' : 'receiving', folder, auto: mode === 'dl', parts: [], pend: 0 });
     dirty.add(it);
   });
   if (mode === 'no') sendIn({ t: 'decline' }, 'ids', items.map(it => it.id));
   else sendIn({ t: 'accept' }, 'files', items.map(it => [it.id, 0]));
-  grp.btns.hidden = true;
+  return true;
 }
 
 const LABEL = { queued: 'waiting for connection', offered: 'waiting for them to accept', pending: '', declined: 'declined', error: 'failed' };
 function paint(it) {
   const done = it.state === 'done';
+  if (it.save) it.save.hidden = it.state !== 'pending';
   it.bar.value = done ? 1 : it.size ? it.n / it.size : 0;
   it.note.textContent = done ? (it.up ? 'sent ✓' : 'received ✓') : LABEL[it.state] ?? Math.floor(it.bar.value * 100) + '%';
 }
