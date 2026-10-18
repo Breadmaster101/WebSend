@@ -50,6 +50,9 @@ function logCode(label, code) {
   const ports = new Map();
   for (const a of addrs) if (a.pub) ports.set(a.ip, (ports.get(a.ip) || new Set()).add(a.port));
   if ([...ports.values()].some(s => s.size > 1)) log(`${label}'s network gave a different public port to each STUN server (symmetric NAT, or several network adapters). Devices on other networks usually can't reach it without a relay.`, 'warn');
+  // Cloudflare WARP's egress ranges. Its NAT drops peer-to-peer UDP from outside, so only same-network connections work.
+  const warp = addrs.find(a => a.pub && (/^104\.28\./.test(a.ip) || /^2a09:bac[0-7]:/i.test(a.ip)));
+  if (warp) log(`${label} comes through Cloudflare WARP (${warp.ip}), which blocks connections from other networks. Turn WARP off on that device and connect again.`, 'warn');
 }
 
 // Address pairs and how far their checks got. Chrome drops failed pairs from its stats, so they're sampled while connecting.

@@ -50,6 +50,7 @@ Common findings: no public address (the network blocks UDP to STUN), a different
 ## Limits
 
 - Peers behind strict NAT (some mobile carriers and corporate networks) can't connect directly. There's no relay by design. Same Wi-Fi always works.
+- VPNs such as Cloudflare WARP block connections from other networks. Turn the VPN off on that device before connecting; the connection log flags WARP addresses.
 - Without **Save to folder…**, a received file is held in browser storage until saved, and folder paths are flattened into file names (`dir_sub_file.txt`).
 - Resume works while both tabs stay open; it isn't persisted across reloads.
 - Connect by sound needs a working speaker and microphone on both devices. Very loud rooms, or a laptop whose microphone filters out tones, may need another method instead.
