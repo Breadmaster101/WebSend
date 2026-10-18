@@ -17,3 +17,8 @@ pre { white-space: pre-wrap; margin: .25rem 0; }
 #steps .on { font-weight: bold; }
 #status.alert { font-weight: bold; }
 #sas b { display: block; font-size: 2rem; }
+#diag { margin-top: 2rem; }
+#diagLog { font: .8rem/1.3 ui-monospace, monospace; list-style: none; padding: 0; }
+#diagLog li { margin: 0 0 .25rem; white-space: pre-wrap; }
+#diagLog .warn { color: light-dark(#a50, #fb4); }
+#diagLog .err { color: light-dark(#b00, #f77); font-weight: bold; }

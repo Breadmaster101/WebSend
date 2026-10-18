@@ -4,7 +4,9 @@
 // A code holds only what WebRTC needs: ICE credentials, the DTLS certificate fingerprint
 // (which authenticates the encrypted channel) and network addresses.
 
-const ICE = [{ urls: 'stun:stun.l.google.com:19302' }]; // finds public addresses across networks; [] = same-LAN only, no third party at all
+// Finds public addresses across networks; [] = same-LAN only, no third party at all. Two servers let the log spot
+// networks that give each destination a different public port (symmetric NAT), which blocks direct connections.
+const ICE = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
 const CHUNK = 64 << 10, READ = 1 << 20;                 // send 64 KB messages, read files 1 MB at a time
 const HIGH = 8 << 20, LOW = 1 << 20;                    // send-buffer backpressure
 const BATCH = 200;                                      // files per control message (keeps messages small)
@@ -16,6 +18,62 @@ const rid = () => Math.random().toString(36).slice(2);
 
 const out = new Map(), inc = new Map(), groups = new Map(), dirty = new Set();
 let pc, dc, myCode, lastOffer, timer, wake, screen, cur = null, connected = false, queue = [], pumping = false, drain = () => {}, moved = 0, route = '';
+
+// ---------- Connection log ----------
+// Shown on the page (not just the console) so a failed connection can be diagnosed and the log copied from any device.
+// level: '' | 'warn' | 'err'. Errors open the log.
+const T0 = performance.now(), tally = { warn: 0, err: 0 };
+function log(msg, level = '') {
+  $('diagLog').append(el('li', { className: level, textContent: `+${((performance.now() - T0) / 1000).toFixed(1)}s ${level ? level.toUpperCase() + ' ' : ''}${msg}` }));
+  if (!level) return;
+  tally[level]++;
+  $('diagCount').textContent = `(${[tally.err && tally.err + ' error' + (tally.err > 1 ? 's' : ''), tally.warn && tally.warn + ' warning' + (tally.warn > 1 ? 's' : '')].filter(Boolean).join(', ')})`;
+  if (level === 'err') $('diag').open = true;
+}
+const why = e => e instanceof Error || e instanceof DOMException ? `${e.name}: ${e.message}` : String(e);
+addEventListener('error', e => log('Script error: ' + e.message, 'err'));
+addEventListener('unhandledrejection', e => log('Unhandled error: ' + why(e.reason), 'err'));
+$('diagCopy').onclick = async e => {
+  const text = [...$('diagLog').children].map(li => li.textContent).join('\n');
+  try { await navigator.clipboard.writeText(text); e.target.textContent = 'Copied'; } catch (err) { log("Couldn't copy the log: " + why(err), 'warn'); }
+  setTimeout(() => e.target.textContent = 'Copy log', 1500);
+};
+log(`Opened ${new Date().toISOString()} in ${navigator.userAgent}`);
+log('STUN servers: ' + (ICE.flatMap(s => s.urls).join(', ') || 'none'));
+
+// Lists the addresses in a code and flags what usually stops two networks connecting.
+function logCode(label, code) {
+  const addrs = code.slice(1).split(',').slice(3).map(c => ({ pub: c[0] === 's', ip: c.slice(1, c.lastIndexOf('_')), port: c.slice(c.lastIndexOf('_') + 1) }));
+  log(`${label}: ${addrs.length} address${addrs.length === 1 ? '' : 'es'}` + addrs.map(a => `\n    ${a.pub ? 'public' : 'local '} ${a.ip}:${a.port}`).join(''));
+  if (!addrs.length) return log(`${label} has no addresses, so nothing can connect to it.`, 'err');
+  if (!addrs.some(a => a.pub) && pc?.iceConnectionState !== 'connected') log(`${label} has no public address (no STUN reply, so the network may block UDP; or the devices found each other first), so only a device on the same network can reach it.`, 'warn');
+  const ports = new Map();
+  for (const a of addrs) if (a.pub) ports.set(a.ip, (ports.get(a.ip) || new Set()).add(a.port));
+  if ([...ports.values()].some(s => s.size > 1)) log(`${label}'s network gave a different public port to each STUN server (symmetric NAT, or several network adapters). Devices on other networks usually can't reach it without a relay.`, 'warn');
+}
+
+// Address pairs and how far their checks got. Chrome drops failed pairs from its stats, so they're sampled while connecting.
+const pairs = new Map();
+async function samplePairs(p) {
+  const s = await p.getStats();
+  const c = id => { const x = s.get(id); return x ? `${x.candidateType} ${x.protocol} ${x.address || x.ip || '(hidden)'}:${x.port}` : '?'; };
+  if (p === pc) s.forEach(r => r.type === 'candidate-pair' && pairs.set(r.id, { ...r, local: c(r.localCandidateId), remote: c(r.remoteCandidateId) }));
+}
+
+// After a failed attempt: every address pair tried and how far its checks got, then a best guess at why.
+async function report(p) {
+  try { await samplePairs(p); } catch (e) { log("Couldn't read connection stats: " + why(e), 'warn'); }
+  let answered = 0, received = 0;
+  for (const r of pairs.values()) {
+    answered += r.responsesReceived || 0;
+    received += r.requestsReceived || 0;
+    log(`Pair ${r.local} → ${r.remote}: ${r.state}, checks sent ${r.requestsSent ?? '?'}, answered ${r.responsesReceived ?? '?'}, received ${r.requestsReceived ?? '?'}`);
+  }
+  log(!pairs.size ? 'No address pairs were tried: one side gave no usable addresses.'
+    : answered ? 'Some checks were answered, yet the connection still failed (the encryption handshake failed, or traffic was blocked after the first packets).'
+    : received ? "The other device's checks reached this one, but none of this device's checks were answered: their network or NAT drops incoming traffic."
+    : 'No checks got through in either direction: a firewall blocks peer-to-peer UDP, or both sides are behind strict NAT. Try a phone hotspot on one side.', 'err');
+}
 
 // ---------- Connection code <-> SDP ----------
 // Code: <kind><ufrag>,<pwd>,<fingerprint b64>,<candidates...>
@@ -61,9 +119,20 @@ function newPeer() {
   ch.onopen = () => ch === dc && opened();
   ch.onclose = () => ch === dc && dropped();
   ch.onmessage = e => ch === dc && onMessage(e.data);
+  ch.onerror = e => ch === dc && log('Data channel error: ' + why(e.error), 'err');
+  log('New connection attempt');
+  pairs.clear();
+  const poll = setInterval(() => p === pc && !connected ? samplePairs(p).catch(() => {}) : clearInterval(poll), 1000);
+  p.onicecandidate = ({ candidate: c }) => c?.candidate && log('Found address: ' + (c.type ? `${c.type} ${c.protocol} ${c.address}:${c.port}` : c.candidate));
+  p.onicecandidateerror = e => log(`STUN ${e.url} error ${e.errorCode} on ${e.address ?? '?'}: ${e.errorText} (harmless if a public address is found)`);
+  p.onicegatheringstatechange = () => log('Address search: ' + p.iceGatheringState);
+  p.oniceconnectionstatechange = () => { const s = p.iceConnectionState; log('Connectivity checks: ' + s, s === 'failed' ? 'err' : s === 'disconnected' ? 'warn' : ''); };
   p.onconnectionstatechange = () => {
-    if (p !== pc || p.connectionState !== 'failed') return;
-    if (connected) dropped(); else if (p.localDescription?.type === 'offer') fail();
+    if (p !== pc) return;
+    const s = p.connectionState;
+    log('Connection: ' + s, s === 'failed' ? 'err' : '');
+    if (s !== 'failed') return;
+    if (connected) dropped(); else if (p.localDescription?.type === 'offer') fail('every address pair failed'); else report(p);
   };
 }
 
@@ -72,7 +141,7 @@ const gathered = p => new Promise(r => {
   const check = () => p.iceGatheringState === 'complete' && r();
   p.addEventListener('icegatheringstatechange', check);
   check();
-  setTimeout(r, 3000);
+  setTimeout(() => { if (p === pc && p.iceGatheringState !== 'complete') log('Address search still running after 3 s; using what it found so far.', 'warn'); r(); }, 3000);
 }).then(() => encode(p.localDescription));
 
 // Each returns the new code, or nothing if the user moved on (Back, or another code) meanwhile.
@@ -81,26 +150,33 @@ async function makeOffer() {
   const p = pc;
   await p.setLocalDescription();
   const code = await gathered(p);
-  if (p === pc) return myCode = code;
+  if (p !== pc) return;
+  logCode('Your invite', code);
+  return myCode = code;
 }
 
 async function makeAnswer(offer) {
   newPeer();
   try { lastOffer = Sound.norm(offer); } catch { lastOffer = offer; }
   const p = pc;
-  await p.setRemoteDescription(decode(offer));
+  const desc = decode(offer);
+  logCode('Their invite', offer);
+  await p.setRemoteDescription(desc);
   await p.setLocalDescription();
   const code = await gathered(p);
   if (p !== pc) return;
+  logCode('Your reply', code);
   clearTimeout(timer);
-  timer = setTimeout(fail, 120000);
+  timer = setTimeout(() => fail('not connected 2 minutes after making the reply. Did the first device take it in?'), 120000);
   return myCode = code;
 }
 
 async function takeAnswer(code) {
-  await pc.setRemoteDescription(decode(code, pc.localDescription.sdp.match(/a=mid:(\S+)/)[1]));
+  const desc = decode(code, pc.localDescription.sdp.match(/a=mid:(\S+)/)[1]);
+  logCode('Their reply', code);
+  await pc.setRemoteDescription(desc);
   clearTimeout(timer);
-  timer = setTimeout(fail, 20000);
+  timer = setTimeout(() => fail('not connected 20 s after taking their reply'), 20000);
 }
 
 async function createCode() {
@@ -120,11 +196,12 @@ async function useCode(text) {
       const reply = await makeAnswer(code);
       if (reply) showCode(reply, 'answer');
     } else {
-      if (pc?.signalingState !== 'have-local-offer') return say("That's a reply. Enter it on the device that started the connection.", true);
+      if (pc?.signalingState !== 'have-local-offer') return log(`Got a reply while ${pc ? pc.signalingState : 'no connection was started'}`, 'warn'), say("That's a reply. Enter it on the device that started the connection.", true);
       await takeAnswer(code);
       say('Connecting…');
     }
-  } catch {
+  } catch (e) {
+    log(`Couldn't use the code "${code.slice(0, 40)}${code.length > 40 ? '…' : ''}" (${code.length} characters): ${why(e)}`, 'err');
     say("That code didn't work. Check you copied all of it.", true);
   }
 }
@@ -137,6 +214,7 @@ function reset(msg) {
 }
 
 function opened() {
+  log('Connected: data channel open');
   connected = true;
   clearTimeout(timer);
   view('connected');
@@ -165,10 +243,12 @@ async function showRoute(p) {
   if (!pair || p !== pc) return;
   const types = [s.get(pair.localCandidateId), s.get(pair.remoteCandidateId)].map(c => c?.candidateType);
   route = types.some(t => t === 'srflx' || t === 'relay') ? ' · via router' : ' · direct';
+  log(`Route: this device ${types[0]} → other device ${types[1]}`);
 }
 
 function dropped(msg = 'Disconnected. Connect again to carry on; unfinished transfers will resume.') {
   if (!connected) return;
+  log(`Disconnected (connection ${pc?.connectionState})`, msg === 'Disconnected.' ? '' : 'warn');
   connected = false;
   route = '';
   cur = null;
@@ -178,8 +258,11 @@ function dropped(msg = 'Disconnected. Connect again to carry on; unfinished tran
   reset(msg);
 }
 
-function fail() {
-  reset("Couldn't connect. Put both devices on the same Wi-Fi and try again; some mobile and work networks block direct connections.");
+async function fail(reason) {
+  const p = pc;
+  log("Couldn't connect: " + reason, 'err');
+  if (p) await report(p);
+  if (p === pc && !connected) reset("Couldn't connect. Put both devices on the same Wi-Fi and try again; some mobile, school and work networks block direct connections. The connection log below shows where it stopped.");
 }
 
 // Keep the screen on while the page is visible; the browser drops the lock whenever it's hidden.
@@ -241,7 +324,7 @@ const on = {
 
 function onMessage(d) {
   if (typeof d !== 'string') return onChunk(d);
-  try { const m = JSON.parse(d); if (Object.hasOwn(on, m.t)) on[m.t](m); } catch {}
+  try { const m = JSON.parse(d); if (Object.hasOwn(on, m.t)) on[m.t](m); } catch (e) { log(`Bad message from the other device: ${why(e)}`, 'err'); }
 }
 
 // Sends accepted files one after another, respecting the channel's buffer.
@@ -268,6 +351,7 @@ async function pump() {
       queue.shift();
     }
   } catch (e) {
+    log(`Sending ${queue[0]?.path} failed: ${why(e)}`, 'err');
     if (ch.readyState === 'open') { const o = queue.shift(); o.state = 'error'; dirty.add(o); }
   } finally {
     pumping = false;
@@ -294,7 +378,7 @@ function finish(it) {
   cur = null;
   send({ t: 'got', id: it.id });
   if (it.folder) {
-    it.chain.then(() => it.w.close()).then(() => it.state = 'done', () => it.state = 'error').then(() => dirty.add(it));
+    it.chain.then(() => it.w.close()).then(() => it.state = 'done', e => { it.state = 'error'; log(`Writing ${it.path} failed: ${why(e)}`, 'err'); }).then(() => dirty.add(it));
     return;
   }
   it.blob = new Blob(it.parts);
@@ -338,7 +422,7 @@ async function saveZip(grp, got) {
     const a = el('a', { href: URL.createObjectURL(await downloadZip(files).blob()), download: name + '.zip', textContent: `Save ${name}.zip`, onclick: savedOnce });
     show(a);
     a.click();
-  } catch (e) { show(el('small', { textContent: 'Zip failed: ' + e.message })); }
+  } catch (e) { show(el('small', { textContent: 'Zip failed: ' + e.message })); log('Zip failed: ' + why(e), 'err'); }
 }
 
 async function openWriter(dir, path) {
@@ -655,7 +739,8 @@ async function startAudio() {
       else soundMsg("Didn't catch all of that", 'Listening again. Move the devices closer or turn the volume up.');
     });
     tap.port.onmessage = e => rx?.push(e.data);
-  } catch {
+  } catch (e) {
+    log('Microphone failed: ' + why(e), 'err');
     const msg = "Couldn't use the microphone. Allow it for this site in the browser's settings, or pick another way.";
     if (audio === ctx) { soundOff(); view(screen); say(msg, true); }
     return false;
@@ -670,7 +755,7 @@ async function heard(code) {
     if (!offering) return;
     stopSending();
     soundMsg('Heard the reply. Connecting…');
-    return takeAnswer(code).catch(() => soundMsg("That reply didn't work", 'Still listening…'));
+    return takeAnswer(code).catch(e => log("Heard reply didn't work: " + why(e), 'err') || soundMsg("That reply didn't work", 'Still listening…'));
   }
   if (code === answered || code === lastOffer || offering) return; // a repeat, or we started and are waiting for a reply
   answered = code;
@@ -680,7 +765,7 @@ async function heard(code) {
     const reply = await makeAnswer(code);
     if (!reply || !rx) return;
     showCode(reply, 'answer'); // plays it too, since sound is on
-  } catch { answered = null; }
+  } catch (e) { answered = null; log("Heard invite didn't work: " + why(e), 'err'); }
 }
 
 // Plays the code over and over until stopped, staying quiet while the other device is talking.
