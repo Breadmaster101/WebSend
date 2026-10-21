@@ -8,6 +8,7 @@
 <title>WebSend</title>
 <link rel="stylesheet" href="style.css">
 <script src="qrcode.js" defer></script>
+<script src="jsQR.js" defer></script>
 <script src="client-zip.js" defer></script>
 <script src="sound.js" defer></script>
 <script src="app.js" defer></script>
@@ -34,59 +35,71 @@
 </section>
 
 <section id="flow" hidden>
-  <button id="back">← Back</button>
   <p id="role"></p>
-  <ol id="steps"></ol>
-  <h2 id="title"></h2>
-  <p id="hint"></p>
+  <p id="steps" aria-label="Progress"></p>
+  <p id="got" hidden>✓ Got the invite</p>
+
+  <div id="ask">
+    <h2 id="askTitle"></h2>
+    <p id="askHint"></p>
+    <fieldset id="askSet"><legend>Pick one</legend></fieldset>
+    <p id="askErr" class="alert" role="alert" hidden></p>
+    <button id="askGo">Continue</button>
+  </div>
 
   <div id="give">
-    <p>Pick one or more:</p>
-    <button data-m="qr">QR code</button>
-    <button data-m="link">Link</button>
-    <button data-m="sound">Sound</button>
-    <p id="making">Making a code…</p>
-    <div data-p="qr" hidden>
-      <canvas id="qr" aria-label="Connection QR code"></canvas>
-      <p>Scan it with the other device's camera app.</p>
-    </div>
-    <div data-p="link" hidden>
-      <div id="codeBtns">
+    <h2 id="giveTitle"></h2>
+    <p id="making"></p>
+    <div id="code">
+      <canvas id="qr" data-g="qr" aria-label="Connection QR code"></canvas>
+      <div data-g="link">
+        <input id="link" readonly aria-label="Connection link">
         <button id="copy">Copy link</button>
         <button id="copyCode">Copy code</button>
         <button id="share">Share…</button>
       </div>
-      <input id="link" readonly aria-label="Connection link">
-      <p>Send it through any app you like, then open it on the other device.</p>
+      <p data-g="sound">Chirping your <span id="chirpWhat"></span>. It repeats until the other device hears it, so keep the devices close with the volume up.</p>
+    </div>
+    <p id="giveTip"></p>
+    <button id="giveSwitch">Use a different method</button>
+    <div id="replyStep">
+      <h2>2. Get its reply</h2>
+      <p>Once it has your invite, the other device asks how to send its reply. Pick the same method here.</p>
+      <fieldset id="replySet"><legend>How is the reply coming back?</legend></fieldset>
+      <p id="replyErr" class="alert" role="alert" hidden></p>
+      <button id="replyGo">Continue</button>
     </div>
   </div>
 
   <div id="get">
-    <p>Pick one or more:</p>
-    <button data-m="camera">Camera</button>
-    <button data-m="paste">Paste</button>
-    <button data-m="listen">Listen</button>
-    <div data-p="camera" hidden>
-      <p>Open the camera app on this device and point it at the QR code on the other one. It opens here by itself.</p>
+    <h2 id="getTitle"></h2>
+    <div data-t="qr">
+      <video id="video" muted playsinline aria-label="Camera view"></video>
+      <p id="scanMsg" aria-live="polite"></p>
     </div>
-    <div data-p="paste" hidden>
-      <form id="pasteForm">
-        <input id="paste" autocomplete="off" placeholder="Paste link or code" aria-label="Link or code">
-        <button>Connect</button>
-      </form>
+    <form id="pasteForm" data-t="link">
+      <input id="paste" autocomplete="off" placeholder="Paste link or code" aria-label="Link or code">
+      <button>Connect</button>
+    </form>
+    <div data-t="sound">
+      <p id="soundMsg" aria-live="polite"></p>
+      <p id="soundSub"></p>
     </div>
+    <p id="getTip"></p>
   </div>
 
-  <div id="listen">
-    <p id="soundMsg" aria-live="polite"></p>
-    <p id="soundSub"></p>
-  </div>
-
-  <button id="next"></button>
+  <button id="back"></button>
 </section>
 
+<div id="sas" hidden>
+  <p>Connected. Check that the other screen shows the same number:</p>
+  <b id="sasNum"></b>
+  <p>If it matches, you're linked to your own device and nobody else's.</p>
+  <button id="sasYes">Yes, it matches</button>
+  <button id="sasNo">No, it's different</button>
+</div>
+
 <section id="main" hidden>
-  <div id="sas"></div>
   <div id="drop">
     <p>Drop files or folders here</p>
     <button id="pickFiles">Add files</button> <button id="pickFolder">Add folder</button>

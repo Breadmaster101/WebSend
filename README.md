@@ -4,26 +4,26 @@ Serverless peer-to-peer file and text sharing in the browser. Files go directly 
 
 ## Use
 
-Open WebSend on both devices. On one, tap **Start a connection**; on the other, **Join a connection**. Both then walk the same three steps:
+Open WebSend on both devices. On one, tap **Start a connection**; on the other, **Join a connection**. The two devices then swap two codes:
 
-1. **Invite**: the starting device gives its invite and the joining device gets it.
-2. **Reply**: the joining device gives a reply and the starting device gets it.
-3. **Share**: you're connected.
+1. **Invite**: the starting device picks how to send its invite, and the joining device picks the same method to take it in.
+2. **Reply**: the joining device picks how to send its reply, and the starting device picks the same method to take it in.
 
-Each step lets you pick how the code travels, and you can pick more than one:
+Each time, the choice is one of:
 
-- **Giving**: **QR code** (scan it with the other device's camera app), **Link** (copy, share or send it through any app) or **Sound** (the device chirps the code).
-- **Getting**: **Camera** (scan the other device's QR code with this device's camera app), **Paste** (a link or code you were sent) or **Listen** (allow the microphone and hear the other device's chirps).
+- **QR code**: one device shows a code and the other scans it in the page (the phone's camera app works too).
+- **Link**: copy, share or send the link through any app, then paste it on the other device or just open it there.
+- **Sound**: one device chirps the code and the other listens. Chirping only needs a speaker; listening needs the microphone.
 
-The two steps can use different methods. For example, scan a PC's QR code with your phone, then pick Sound on the phone and Listen on the PC so the phone chirps its reply back. Sound works best with the devices close together and the volume up.
+The invite and the reply can use different methods. For example, send a PC's invite to your phone as a link, then let the phone chirp its reply back. Sound works best with the devices close together and the volume up.
 
-Once connected, check both screens show the same 6-digit number. Either side can then send files, folders or text. The receiver ticks the files they want (all are ticked to start, with **Select all** to toggle) and taps **Download**, **Download as .zip** (keeps folder structure), **Save to folder…** (Chrome/Edge desktop) or **Decline**. Each file also has its own **Save** button. Unticked files stay available, and received ones can be downloaded again the same way.
+Once connected, check both screens show the same 6-digit number and tap **Yes, it matches**. Either side can then send files, folders or text. The receiver ticks the files they want (all are ticked to start, with **Select all** to toggle) and taps **Download**, **Download as .zip** (keeps folder structure), **Save to folder…** (Chrome/Edge desktop) or **Decline**. Each file also has its own **Save** button. Unticked files stay available, and received ones can be downloaded again the same way.
 
 If the connection drops, connect again in the same tabs. Unfinished transfers resume where they stopped.
 
 ## Host
 
-Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, `app.js`, `sound.js`, `tap.js`, `style.css`, `qrcode.js`, `client-zip.js`. No build step.
+Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, `app.js`, `sound.js`, `tap.js`, `style.css`, `qrcode.js`, `jsQR.js`, `client-zip.js`. No build step.
 
 ## Security
 
@@ -31,6 +31,7 @@ Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `in
 - **Matching numbers prove a direct connection.** After connecting, both screens show a number derived from both devices' keys. If someone substituted their own code (by answering a sound code first, or tampering with a message), the numbers differ.
 - **Sound codes can be heard by anyone nearby.** Overhearing one doesn't let anyone decrypt anything, but someone could reply first. The matching number catches that.
 - **Nothing passes through a server.** Codes are in the URL fragment (`#…`), which browsers never send to the web host, and the page clears it from the address bar on load.
+- **Camera and microphone stay on the device.** The camera runs only while scanning and the microphone only while listening. Frames and audio are decoded in the page and never sent anywhere.
 - **Receiver must accept** every batch of files. Received names are only ever shown as text.
 - **Strict Content-Security-Policy:** only the page's own scripts run, and there are no third-party requests.
 - **One third party, optional:** Google's public STUN servers tell each device its public address so devices on different networks can connect. Two are asked so the connection log can spot symmetric NAT. They see IP addresses only, never data. Set `ICE = []` in `app.js` for same-network-only with zero third parties.
@@ -56,4 +57,5 @@ Common findings: no public address (the network blocks UDP to STUN), a different
 - Connect by sound needs a working speaker and microphone on both devices. Very loud rooms, or a laptop whose microphone filters out tones, may need another method instead.
 
 `qrcode.js` is [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 1.4.4 by Kazuhiko Arase (MIT).
+`jsQR.js` is [jsQR](https://github.com/cozmo/jsQR) 1.4.0 by Cosmo Wolfe (Apache-2.0), its `dist/jsQR.js` build.
 `client-zip.js` is [client-zip](https://github.com/Touffy/client-zip) 2.5.1 by David Junger (MIT), its `worker.js` build.

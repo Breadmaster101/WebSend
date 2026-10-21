@@ -18,6 +18,9 @@ const rid = () => Math.random().toString(36).slice(2);
 
 const out = new Map(), inc = new Map(), groups = new Map(), dirty = new Set();
 let pc, dc, myCode, lastOffer, timer, wake, screen, cur = null, connected = false, queue = [], pumping = false, drain = () => {}, moved = 0, route = '';
+// role: 'starting' | 'joining'. replying: the joiner has taken in the invite. sendM / getM: how this device gives its code
+// and takes in the other's ('qr' | 'link' | 'sound'). checked: the user confirmed both screens show the same number.
+let role = null, replying = false, sendM = null, getM = null, checked = false;
 
 // ---------- Connection log ----------
 // Shown on the page (not just the console) so a failed connection can be diagnosed and the log copied from any device.
@@ -182,22 +185,25 @@ async function takeAnswer(code) {
   timer = setTimeout(() => fail('not connected 20 s after taking their reply'), 20000);
 }
 
+// The invite is made while the user picks how to send it, so it's usually ready by the time it's shown.
 async function createCode() {
-  showCode(null, 'offer');
-  const code = await makeOffer();
-  if (code) showCode(code, 'offer');
+  myCode = null;
+  if (await makeOffer()) showCode();
 }
 
+// Takes in a code from any method. An invite makes this device the joiner, whatever it was doing before.
 async function useCode(text) {
   const code = decodeURIComponent(text.trim().split('#').pop());
   if (!code) return;
   try {
     if (code[0] === 'o') {
-      if (code === myCode) return;
+      if (code === myCode) return say("That's this device's own invite. Use it on the other device.", true);
       decode(code);
-      showCode(null, 'answer');
-      const reply = await makeAnswer(code);
-      if (reply) showCode(reply, 'answer');
+      role = 'joining';
+      replying = true;
+      myCode = sendM = null;
+      view('ask');
+      if (await makeAnswer(code)) showCode();
     } else {
       if (pc?.signalingState !== 'have-local-offer') return log(`Got a reply while ${pc ? pc.signalingState : 'no connection was started'}`, 'warn'), say("That's a reply. Enter it on the device that started the connection.", true);
       await takeAnswer(code);
@@ -213,12 +219,15 @@ async function useCode(text) {
 function reset(msg) {
   clearTimeout(timer);
   if (!connected) { pc?.close(); pc = dc = myCode = null; }
+  role = sendM = getM = lastHeard = null;
+  replying = false;
   view('start', msg);
 }
 
 function opened() {
   log('Connected: data channel open');
   connected = true;
+  checked = false;
   clearTimeout(timer);
   view('connected');
   showSas(pc);
@@ -231,9 +240,7 @@ function opened() {
 async function showSas(p) {
   const fps = [p.localDescription, p.remoteDescription].map(d => d.sdp.match(/a=fingerprint:\S+ (\S+)/)[1].toUpperCase()).sort();
   const n = new DataView(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(fps.join()))).getUint32(0) % 1e6;
-  $('sas').replaceChildren('Connected. Check both screens show the same number:',
-    el('b', { textContent: String(n).padStart(6, '0').replace(/^.../, '$& ') }),
-    el('small', { textContent: "If they differ, disconnect: you're linked to some other device." }));
+  $('sasNum').textContent = String(n).padStart(6, '0').replace(/^.../, '$& ');
 }
 
 // "direct" = device to device on the local network. "via router" = each side reached the other's public address,
@@ -474,78 +481,92 @@ function say(msg, alert = false) {
   $('status').classList.toggle('alert', alert);
 }
 
-// The connection screens. Both sides walk the same steps; each step either gives a code (QR, link, sound)
-// or gets one (camera, paste, listen). No method is picked up front, so none looks required.
-const STEPS = ['Invite', 'Reply', 'Share'];
-const SCREENS = {
-  offer: {
-    role: 'starting', step: 0, panel: 'give', next: 'Next: get their reply',
-    title: 'Send your invite', hint: 'Choose how to get it to the other device. You can use more than one.',
-  },
-  reply: {
-    role: 'starting', step: 1, panel: 'get',
-    title: 'Get their reply', hint: 'The other device now has a reply for you. Choose how to bring it in.',
-  },
-  join: {
-    role: 'joining', step: 0, panel: 'get',
-    title: 'Get their invite', hint: 'Choose how to bring in the invite from the other device.',
-  },
-  answer: {
-    role: 'joining', step: 1, panel: 'give',
-    title: 'Send your reply', hint: "Choose how to get it back to the first device. You're connected as soon as it goes in.",
-  },
+// The connection screens. After start or join, each device answers one question per direction: how its code
+// goes to the other device, and how it takes in the other's. The three methods are listed alike and none is
+// picked in advance, so the invite and the reply can travel different ways.
+//   ask:  the question that fits (send the invite / get the invite / send the reply)
+//   give: this device's code in the method picked; the starter also asks how the reply comes back
+//   get:  scan, paste or listen for the other device's code
+const STEPS = ['Invite', 'Reply', 'Check number', 'Send'];
+const METHODS = { qr: 'QR code', link: 'Link', sound: 'Sound' };
+const ABOUT = {
+  send: { qr: 'Show a code for the other device to scan.', link: 'Copy a link and send it through any app, like a messenger or email.', sound: 'Chirp it to the other device. Needs a speaker.' },
+  get: { qr: "Scan the code it shows with this device's camera.", link: 'Paste the link it sends you.', sound: 'Listen for its chirps. Needs a microphone.' },
 };
 
-const stepper = (ol, at) => ol.replaceChildren(...STEPS.map((t, i) =>
-  el('li', { textContent: (i < at ? '✓ ' : '') + t, className: i === at ? 'on' : '' })));
+const stepper = at => $('steps').replaceChildren(...STEPS.flatMap((t, i) =>
+  [i ? ' › ' : '', i === at ? el('b', { textContent: t, ariaCurrent: 'step' }) : (i < at ? '✓ ' : '') + t]));
+const tip = (id, text) => $(id).replaceChildren(el('b', { textContent: 'On the other device:' }), ' ' + text);
 
-// Method buttons show their panel while pressed. Sound and Listen follow whether sound is running.
-function mark(btn, on) {
-  btn.setAttribute('aria-pressed', on);
-  btn.textContent = (on ? '✓ ' : '') + btn.textContent.replace(/^✓ /, '');
-  const panel = btn.parentElement.querySelector(`[data-p="${btn.dataset.m}"]`);
-  if (panel) panel.hidden = !on;
-  if (on && btn.dataset.m === 'paste' && !matchMedia('(pointer: coarse)').matches) $('paste').focus();
+// Fresh radios every time, so nothing is picked until the user picks.
+function methods(set, kind) {
+  set.replaceChildren(set.querySelector('legend'), ...Object.keys(METHODS).map(m => el('label', {},
+    el('input', { type: 'radio', name: set.id, value: m }), el('b', { textContent: METHODS[m] }), el('span', { textContent: ABOUT[kind][m] }))));
+  set.nextElementSibling.hidden = true;
+}
+function picked(set, msg) {
+  const m = set.querySelector(':checked')?.value;
+  if (!m) Object.assign(set.nextElementSibling, { hidden: false, textContent: msg });
+  return m;
 }
 
 function view(s, msg) {
-  const fresh = s !== screen;
   screen = s;
-  const c = SCREENS[s];
+  const flow = ['ask', 'give', 'get'].includes(s), starting = role === 'starting';
   $('start').hidden = s !== 'start';
-  $('flow').hidden = !c;
-  $('main').hidden = $('hangup').hidden = s !== 'connected';
-  if (!c) soundOff();
-  if (c) {
-    $('role').textContent = `You're ${c.role} the connection.`;
-    stepper($('steps'), c.step);
-    $('title').textContent = c.title;
-    $('hint').textContent = c.hint;
-    $('give').hidden = c.panel !== 'give';
-    $('get').hidden = c.panel !== 'get';
-    document.querySelectorAll('[data-m]').forEach(b => {
-      const snd = b.dataset.m === 'sound' || b.dataset.m === 'listen';
-      if (snd || fresh) mark(b, snd && !!audio);
-    });
-    $('listen').hidden = !audio;
-    $('next').hidden = !c.next;
-    $('next').textContent = c.next || '';
+  $('flow').hidden = !flow;
+  $('hangup').hidden = s !== 'connected';
+  $('sas').hidden = s !== 'connected' || checked;
+  $('main').hidden = s !== 'connected' || !checked;
+  if (flow) {
+    $('role').textContent = `You're ${role} the connection.`;
+    stepper(starting ? +(s === 'get') : +replying);
+    $('got').hidden = !replying;
+    for (const id of ['ask', 'give', 'get']) $(id).hidden = s !== id;
+    $('back').textContent = s === 'get' || (s === 'ask' && !replying) ? 'Back' : 'Start over';
   }
+  if (s === 'ask') {
+    $('askTitle').textContent = starting ? 'How do you want to send your invite?' : replying ? 'How do you want to send your reply?' : 'How are you getting the invite?';
+    $('askHint').textContent = replying ? "Any method works, even a different one from the invite's." : starting ? '' : 'Pick the method the other device is using to send it.';
+    methods($('askSet'), starting || replying ? 'send' : 'get');
+  }
+  if (s === 'give') {
+    $('giveTitle').textContent = starting ? '1. Send your invite' : 'Send your reply';
+    document.querySelectorAll('[data-g]').forEach(p => p.hidden = p.dataset.g !== sendM);
+    tip('giveTip', starting
+      ? `tap Join a connection and pick ${METHODS[sendM]}.` + { qr: ' Its camera app works too.', link: ' Or just open the link there.', sound: '' }[sendM]
+      : `under Get its reply, pick ${METHODS[sendM]}. You're connected as soon as it takes in your reply.`);
+    $('replyStep').hidden = !starting;
+    if (starting) methods($('replySet'), 'get');
+    showCode();
+  }
+  if (s === 'get') {
+    const what = starting ? 'reply' : 'invite';
+    $('getTitle').textContent = { qr: 'Scan', link: 'Paste', sound: 'Listen for' }[getM] + ` the other device's ${what}`;
+    document.querySelectorAll('[data-t]').forEach(p => p.hidden = p.dataset.t !== getM);
+    tip('getTip', starting ? `once it has your invite, it asks how to send its reply. Pick ${METHODS[getM]} there.` : `tap Start a connection and pick ${METHODS[getM]}.`);
+    if (getM === 'link' && !matchMedia('(pointer: coarse)').matches) $('paste').focus();
+  }
+  syncMedia();
   $('sendText').disabled = s !== 'connected';
   say(msg || {
-    offer: 'Waiting for the other device…', reply: 'Waiting for their reply…', answer: 'Waiting for the first device to take your reply…',
+    give: starting ? '' : 'Waiting for the other device to take your reply…', get: starting ? 'Waiting for their reply…' : '',
     connected: 'Connected', handed: 'Code passed to your other WebSend tab. Switch to it; you can close this one.',
   }[s], !!msg && s === 'start');
 }
 
-// code = null shows the screen while the code is still being made.
-function showCode(code, type) {
-  $('qr').hidden = $('link').hidden = $('codeBtns').hidden = !code;
-  view(type);
-  $('making').hidden = !!code || !document.querySelector('#give [data-m][aria-pressed="true"]');
-  if (!code) return;
-  if (rx) broadcast(code);
-  const link = location.href.split('#')[0] + '#' + code;
+// Shows this device's code once it's ready. Called again when making it finishes.
+let shown;
+function showCode() {
+  const what = role === 'starting' ? 'invite' : 'reply';
+  $('making').textContent = `Making your ${what}…`;
+  $('making').hidden = !!myCode;
+  $('code').hidden = !myCode;
+  $('chirpWhat').textContent = what;
+  syncMedia();
+  if (!myCode || myCode === shown) return;
+  shown = myCode;
+  const link = location.href.split('#')[0] + '#' + myCode;
   $('link').value = link;
   const q = qrcode(0, 'M');
   q.addData(link);
@@ -646,18 +667,25 @@ setInterval(() => {
   lastMoved = moved;
 }, 500);
 
-$('goStart').onclick = createCode;
-$('goJoin').onclick = () => view('join');
-document.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
-  const on = b.getAttribute('aria-pressed') !== 'true';
-  if (b.dataset.m !== 'sound' && b.dataset.m !== 'listen') { mark(b, on); if ($('link').value) $('making').hidden = true; }
-  else if (on) soundOn();
-  else { soundOff(); view(screen); }
-});
-// Back from a reply we made drops it and goes back to getting their invite.
-$('back').onclick = () => { const s = screen; if (s === 'reply') return view('offer'); reset(); if (s === 'answer') view('join'); };
-$('next').onclick = () => view('reply');
-$('hangup').onclick = () => { const p = pc; dropped('Disconnected.'); p?.close(); clearFiles(); };
+$('goStart').onclick = () => { role = 'starting'; view('ask'); createCode(); };
+$('goJoin').onclick = () => { role = 'joining'; view('ask'); };
+$('askGo').onclick = () => {
+  const m = picked($('askSet'), 'Pick a method first.');
+  if (!m) return;
+  if (role === 'starting' || replying) { sendM = m; view('give'); } else { getM = m; view('get'); }
+};
+$('replyGo').onclick = () => {
+  const m = picked($('replySet'), 'Pick how the reply is coming back first.');
+  if (m) { getM = m; view('get'); }
+};
+document.addEventListener('change', e => { if (e.target.type === 'radio') e.target.closest('fieldset').nextElementSibling.hidden = true; });
+$('giveSwitch').onclick = () => view('ask');
+// Back from scanning, pasting or listening returns to the question or code before it; elsewhere it starts over.
+$('back').onclick = () => screen === 'get' ? view(role === 'starting' ? 'give' : 'ask') : reset();
+$('sasYes').onclick = () => { checked = true; view('connected'); };
+$('sasNo').onclick = () => hangup("Disconnected because the numbers didn't match, so another device may have answered your invite. Connect again, ideally side by side.");
+$('hangup').onclick = () => hangup('Disconnected.');
+function hangup(msg) { const p = pc; dropped(msg); p?.close(); clearFiles(); }
 
 // A deliberate disconnect forgets every transfer, unlike a dropped connection, which keeps them to resume.
 function clearFiles() {
@@ -694,94 +722,85 @@ addEventListener('beforeunload', e => {
   if (connected || [...out.values(), ...inc.values()].some(x => x.state === 'sending' || x.state === 'receiving')) e.preventDefault();
 });
 
-// ---------- Sound ----------
-// Sound is one of the ways to give or get a code. Picking Sound on a "give" screen plays the code shown there
-// (sound.js turns codes into tones) and listens for the other device's reply; picking Listen on a "get" screen
-// waits for the other device's code. Methods can be mixed: scan the invite's QR code with a phone, then let the
-// phone chirp its reply to the PC. Sound stays on across steps until turned off or connected.
-// Anyone in earshot can hear the codes (harmless) or answer first; the number shown on connect catches that.
+// ---------- Sound and camera ----------
+// Each runs only while the screen needs it: the speaker while this device's code is being sent by sound,
+// the microphone on a "listen" screen, the camera on a "scan" screen. Playing never needs the microphone.
+// sound.js turns codes into tones. Anyone in earshot can hear them (harmless) or answer first; the number check catches that.
 const wait = ms => new Promise(r => setTimeout(r, ms));
-let audio, mic, rx, osc = [], sending = null, answered = null;
+let audio, ear = null, cam = null, rx, osc = [], sending = null, lastHeard = null;
+
+function syncMedia() {
+  const chirp = sendM === 'sound' && (screen === 'give' || (screen === 'get' && role === 'starting')); // the invite keeps playing while the starter waits
+  const hear = screen === 'get' && getM === 'sound';
+  if ((chirp || hear) && !audio) audio = new AudioContext(); // first made during the tap that picked sound, so the browser lets it play
+  if (chirp && myCode) { if (sending?.code !== myCode) broadcast(myCode); } else stopSending();
+  if (hear) { if (!ear) listen(); } else stopListening();
+  if (screen === 'get' && getM === 'qr') { if (!cam) scan(); } else stopScanning();
+  if (!chirp && !hear && audio) { audio.close(); audio = null; }
+}
 
 function soundMsg(msg, sub = '') {
   $('soundMsg').textContent = msg;
   $('soundSub').textContent = sub;
 }
 
-// Sound or Listen picked: plays the code shown (if any), and listens for the other device's.
-async function soundOn() {
-  const ok = startAudio();
-  view(screen);
-  if (!await ok) return;
-  view(screen);
-  if (SCREENS[screen].panel === 'give' && myCode) broadcast(myCode);
-  else soundMsg('Listening for the other device…', 'Pick Sound on it.');
-}
-
-// Microphone in, speaker out. Returns false if the microphone can't be used.
-async function startAudio() {
+// Microphone in. A failure only affects listening; anything this device is playing carries on.
+async function listen() {
+  const me = ear = {};
   soundMsg('Allow the microphone if asked', 'It only listens for the other device, and stops once you are connected.');
-  $('listen').hidden = false;
-  const ctx = audio = new AudioContext(); // made during the tap, so the browser lets it play sound
   try {
-    mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-    if (audio !== ctx) { mic.getTracks().forEach(t => t.stop()); return false; } // left the screen meanwhile
+    me.mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    if (ear !== me) return me.mic.getTracks().forEach(t => t.stop()); // left the screen meanwhile
     let src;
-    try { src = audio.createMediaStreamSource(mic); } catch { // Firefox: must match the microphone's sample rate
+    try { src = audio.createMediaStreamSource(me.mic); } catch { // Firefox: the context must run at the microphone's sample rate
+      stopSending();
       audio.close();
-      audio = new AudioContext({ sampleRate: mic.getAudioTracks()[0].getSettings().sampleRate });
-      src = audio.createMediaStreamSource(mic);
+      audio = new AudioContext({ sampleRate: me.mic.getAudioTracks()[0].getSettings().sampleRate });
+      src = audio.createMediaStreamSource(me.mic);
     }
     await audio.resume();
     await audio.audioWorklet.addModule('tap.js');
-    const tap = new AudioWorkletNode(audio, 'tap'), sink = audio.createGain();
+    if (ear !== me) return;
+    const sink = audio.createGain();
+    me.tap = new AudioWorkletNode(audio, 'tap');
     sink.gain.value = 0; // routed to the speakers silently, so every browser keeps the tap running
-    src.connect(tap).connect(sink).connect(audio.destination);
+    src.connect(me.tap).connect(sink).connect(audio.destination);
     rx = Sound.receiver(audio.sampleRate, heard, (s, f) => {
       if (s === 'hearing') soundMsg(`Hearing the other device… ${Math.round(f * 100)}%`);
       else soundMsg("Didn't catch all of that", 'Listening again. Move the devices closer or turn the volume up.');
     });
-    tap.port.onmessage = e => rx?.push(e.data);
+    me.tap.port.onmessage = e => ear === me && rx?.push(e.data);
+    soundMsg('Listening for the other device…', 'Keep the devices close with the volume up.');
+    syncMedia(); // restarts playing if Firefox needed a new context
   } catch (e) {
-    log('Microphone failed: ' + why(e), 'err');
-    const msg = "Couldn't use the microphone. Allow it for this site in the browser's settings, or pick another way.";
-    if (audio === ctx) { soundOff(); view(screen); say(msg, true); }
-    return false;
+    if (ear !== me) return;
+    log('Microphone failed: ' + why(e), 'warn');
+    soundMsg("Couldn't use the microphone.", "Allow it for this site in the browser's settings, or go back and pick another way.");
   }
-  return true;
 }
 
-async function heard(code) {
-  if (!SCREENS[screen]) return;
-  const offering = pc?.signalingState === 'have-local-offer' && myCode?.[0] === 'o';
-  if (code[0] !== 'o') {
-    if (!offering) return;
-    stopSending();
-    soundMsg('Heard the reply. Connecting…');
-    return takeAnswer(code).catch(e => log("Heard reply didn't work: " + why(e), 'err') || soundMsg("That reply didn't work", 'Still listening…'));
-  }
-  if (code === answered || code === lastOffer || offering) return; // a repeat, or we started and are waiting for a reply
-  answered = code;
-  stopSending();
-  soundMsg('Heard the other device. Replying…');
-  try {
-    const reply = await makeAnswer(code);
-    if (!reply || !rx) return;
-    showCode(reply, 'answer'); // plays it too, since sound is on
-  } catch (e) { answered = null; log("Heard invite didn't work: " + why(e), 'err'); }
+function stopListening() {
+  if (!ear) return;
+  ear.mic?.getTracks().forEach(t => t.stop());
+  ear.tap?.disconnect();
+  ear = rx = null;
+}
+
+function heard(code) {
+  if (code === lastHeard || code === lastOffer) return; // a repeat, or the invite this device already answered
+  lastHeard = code;
+  soundMsg(code[0] === 'o' ? 'Heard the invite.' : 'Heard the reply. Connecting…');
+  useCode(code);
 }
 
 // Plays the code over and over until stopped, staying quiet while the other device is talking.
 async function broadcast(code) {
   stopSending();
-  const me = sending = {}, tones = Sound.frame(code), offer = code[0] === 'o';
+  const me = sending = { code }, tones = Sound.frame(code);
   while (sending === me) {
-    if (rx.busy()) { await wait(200); continue; }
-    soundMsg(offer ? 'Calling the other device…' : 'Sending the reply…', "Those chirps are the code.");
+    if (rx?.busy()) { await wait(200); continue; }
     await play(tones);
     if (sending !== me) return;
-    soundMsg(offer ? 'Listening for the other device…' : 'Waiting for the other device to hear the reply…',
-      offer ? 'Pick Listen on it.' : '');
     await wait(1000 + Math.random() * 2000);
   }
 }
@@ -804,7 +823,7 @@ function play(tones) {
   os[1].connect(g2).connect(g);
   g.connect(audio.destination);
   os.forEach(o => { o.start(t0); o.stop(end); });
-  rx.mute((end - audio.currentTime + (audio.outputLatency || 0)) * 1000 + 300); // don't decode our own sound or its echo
+  rx?.mute((end - audio.currentTime + (audio.outputLatency || 0)) * 1000 + 300); // don't decode our own sound or its echo
   return new Promise(r => os[0].onended = r);
 }
 
@@ -814,11 +833,41 @@ function stopSending() {
   osc = [];
 }
 
-function soundOff() {
-  stopSending();
-  mic?.getTracks().forEach(t => t.stop());
-  audio?.close();
-  audio = mic = rx = answered = null;
+// Scans QR codes in the page (jsQR), so the camera app and a second tab aren't needed. Frames never leave the device.
+async function scan() {
+  const me = cam = {}, v = $('video');
+  $('scanMsg').textContent = 'Allow the camera if asked. It only looks for the code.';
+  try {
+    me.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    if (cam !== me) return me.stream.getTracks().forEach(t => t.stop());
+    v.srcObject = me.stream;
+    await v.play();
+    $('scanMsg').textContent = 'Point it at the code on the other screen. It scans by itself.';
+    const c = document.createElement('canvas'), x = c.getContext('2d', { willReadFrequently: true });
+    let last;
+    while (cam === me) {
+      if (v.videoWidth) {
+        const k = Math.min(1, 640 / Math.max(v.videoWidth, v.videoHeight)); // smaller frames scan faster and still read fine
+        c.width = v.videoWidth * k;
+        c.height = v.videoHeight * k;
+        x.drawImage(v, 0, 0, c.width, c.height);
+        const text = jsQR(x.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: 'dontInvert' })?.data;
+        if (text && text !== last) { last = text; useCode(text); }
+      }
+      await wait(200);
+    }
+  } catch (e) {
+    if (cam !== me) return;
+    log('Camera failed: ' + why(e), 'warn');
+    $('scanMsg').textContent = "Couldn't use the camera. Allow it for this site in the browser's settings, or go back and pick another way.";
+  }
+}
+
+function stopScanning() {
+  if (!cam) return;
+  cam.stream?.getTracks().forEach(t => t.stop());
+  $('video').srcObject = null;
+  cam = null;
 }
 
 // ---------- Tab handoff ----------
