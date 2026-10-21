@@ -28,7 +28,7 @@ Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `in
 ## Security
 
 - **Encrypted end to end** by WebRTC (DTLS). The connection code carries the peer's certificate fingerprint, so only the device holding the matching key can connect. Codes swapped in person (QR) can't be intercepted. Codes sent through a messenger are as trustworthy as that messenger.
-- **Matching numbers prove a direct connection.** After connecting, both screens show a number derived from both devices' keys. If someone substituted their own code (by answering a sound code first, or tampering with a message), the numbers differ.
+- **Matching numbers prove a direct connection.** After connecting, both screens show a number derived from both devices' keys. If someone substituted their own code (by answering a sound code first, or tampering with a message), the numbers differ. Each device also mixes a random value into the number, sending a hash of it before either value is revealed, so a forger can't try key after key until the numbers happen to agree. A guess has a 1 in a million chance.
 - **Sound codes can be heard by anyone nearby.** Overhearing one doesn't let anyone decrypt anything, but someone could reply first. The matching number catches that.
 - **Nothing passes through a server.** Codes are in the URL fragment (`#…`), which browsers never send to the web host, and the page clears it from the address bar on load.
 - **Camera and microphone stay on the device.** The camera runs only while scanning and the microphone only while listening. Frames and audio are decoded in the page and never sent anywhere.
