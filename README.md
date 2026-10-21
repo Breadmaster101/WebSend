@@ -19,11 +19,11 @@ The invite and the reply can use different methods. For example, send a PC's inv
 
 Once connected, check both screens show the same 6-digit number and tap **Yes, it matches**. Either side can then send files, folders or text, by picking them, dropping them on the page or pasting them (a pasted screenshot is sent as an image; pasted text goes into the text box to check before sending). The receiver ticks the files they want (all are ticked to start, with **Select all** to toggle) and taps **Download**, **Download as .zip** (keeps folder structure), **Save to folder…** (Chrome/Edge desktop) or **Decline**. Each file also has its own **Save** button. Unticked files stay available, and received ones can be downloaded again the same way. While a file is on its way, either side can **Pause**, **Resume** or **Cancel** it.
 
-If the connection drops, connect again in the same tabs. Unfinished transfers resume where they stopped.
+If the connection drops, connect again. Unfinished transfers resume where they stopped, even after a reload on the sending device (add the files again) or a crash on the receiving one. Reloading or closing the receiving tab deletes its unfinished downloads, so those start over.
 
 ## Host
 
-Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, `app.js`, `sound.js`, `tap.js`, `style.css`, `qrcode.js`, `jsQR.js`, `client-zip.js`, plus `LICENSE` and `THIRD-PARTY-NOTICES` so the license texts travel with the code. No build step.
+Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, `app.js`, `sound.js`, `tap.js`, `store.js`, `style.css`, `qrcode.js`, `jsQR.js`, `client-zip.js`, `idb-keyval.js`, plus `LICENSE` and `THIRD-PARTY-NOTICES` so the license texts travel with the code. No build step.
 
 ## Security
 
@@ -34,12 +34,26 @@ Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `in
 - **Nothing passes through a server.** Codes are in the URL fragment (`#…`), which browsers never send to the web host, and the page clears it from the address bar on load.
 - **Camera and microphone stay on the device.** The camera runs only while scanning and the microphone only while listening. Frames and audio are decoded in the page and never sent anywhere.
 - **Receiver must accept** every batch of files. Received names are only ever shown as text.
+- **Every 4 MB is checked.** The sender sends the SHA-256 of each segment after its bytes, and the receiver stores a segment only once it matches; a damaged one is sent again.
 - **Strict Content-Security-Policy:** only the page's own scripts run, and there are no third-party requests.
 - **One third party, optional:** Google's public STUN servers tell each device its public address so devices on different networks can connect. Two are asked so the connection log can spot symmetric NAT. They see IP addresses only, never data. Each lane asks them again. Set `ICE = []` in `app.js` for same-network-only with zero third parties.
 
 ## Sound
 
 `sound.js` is a small acoustic modem: 16-tone FSK at 25 ms a symbol (1–5 kHz), tone sets that rotate so room echo doesn't blur neighbouring symbols, two-tone sync chords, and Reed–Solomon error correction. Each device repeats its code, and the listener adds up what it heard across repeats, so a noisy room costs another round instead of failing. A code takes about 6–7 seconds to send.
+
+## Storage
+
+Received files are written to the browser's private storage (the origin private file system) as they arrive, so a big file never has to fit in memory. `store.js` does the writing in a worker, and a small IndexedDB note records how much of each download is stored, which is what lets a download resume after a crash. Before accepting, the receiver checks the browser has room; if not, it says so (and suggests **Save to folder…** where available).
+
+A website can't run while it's closed, so WebSend keeps that storage short-lived instead:
+
+- A cancelled, declined or failed file is deleted at once, and **Disconnect** deletes everything the tab stored.
+- Closing or reloading the tab deletes everything it stored, finished or not. The browser may stop that partway, so the tab also leaves a note that it closed normally, and the next visit deletes the rest instead of resuming it.
+- Each visit deletes whatever no open WebSend tab is using, except unfinished downloads less than a day old, which come back to resume. These are only left behind when a tab crashes or the browser discards it in the background (common on phones), since a normal close deletes them.
+- WebSend never asks for persistent storage, so the browser can also clear it on its own when the disk runs low. Safari clears it after seven days without a visit.
+
+So a normal close leaves nothing on disk, except whatever the browser cut short, which the next visit deletes. Only a crashed or discarded tab leaves an unfinished download to resume, and only until the next visit (or until the browser needs the space). Clearing the site's data in the browser removes it too. Browsers without this storage (such as Firefox in a private window) keep received files in memory, as before.
 
 ## Speed
 
@@ -62,11 +76,13 @@ Common findings: no public address (the network blocks UDP to STUN), a different
 
 - Peers behind strict NAT (some mobile carriers and corporate networks) can't connect directly. There's no relay by design. Same Wi-Fi always works.
 - VPNs such as Cloudflare WARP block connections from other networks. Turn the VPN off on that device before connecting; the connection log flags WARP addresses.
-- Without **Save to folder…**, a received file is held in browser storage until saved, and folder paths are flattened into file names (`dir_sub_file.txt`).
-- Resume works while both tabs stay open; it isn't persisted across reloads.
+- Without **Save to folder…**, folder paths are flattened into file names (`dir_sub_file.txt`) unless you use **Download as .zip**.
+- After a reload, the sending device has to add unfinished files again (browsers don't let a page reopen a file by itself). A file is matched by its path, size and modified time. An unfinished download resumes only after its tab crashed or was discarded, for up to a day; reloading or closing it deletes the download.
+- Both devices need the same version of WebSend. If one has an old copy open, reload it.
 - Connect by sound needs a working speaker and microphone on both devices. Very loud rooms, or a laptop whose microphone filters out tones, may need another method instead.
 
 `qrcode.js` is [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 1.4.4 by Kazuhiko Arase (MIT).
 `jsQR.js` is [jsQR](https://github.com/cozmo/jsQR) 1.4.0 by Cosmo Wolfe (Apache-2.0), its `dist/jsQR.js` build.
-All three are unmodified; their full license texts are in [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES).
 `client-zip.js` is [client-zip](https://github.com/Touffy/client-zip) 2.5.1 by David Junger (MIT), its `worker.js` build.
+`idb-keyval.js` is [idb-keyval](https://github.com/jakearchibald/idb-keyval) 6.3.0 by Jake Archibald (Apache-2.0), its `dist/umd.js` build.
+All four are unmodified; their full license texts are in [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES).

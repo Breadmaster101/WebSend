@@ -8,10 +8,12 @@
 // networks that give each destination a different public port (symmetric NAT), which blocks direct connections.
 const ICE = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
 const CHUNK = 64 << 10, BIG = 256 << 10;                // send 64 KB messages, or 256 KB once the other device says it takes them
-const READ = 1 << 20, SEG = 4 << 20;                    // read files 1 MB at a time, hand them to lanes 4 MB at a time
+const SEG = 4 << 20;                                    // hand files to lanes 4 MB at a time, each with its own checksum
 const HIGH = 8 << 20, LOW = 1 << 20;                    // send-buffer backpressure
 const LANES = 3;                                        // connections files travel over (see Lanes)
 const BATCH = 200;                                      // files per control message (keeps messages small)
+const PROTO = 2;                                        // both devices must speak the same version (2: checksums)
+const KEEP = 24 * 3600e3;                               // how long an unfinished download is kept to resume after a crash
 
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
@@ -271,7 +273,7 @@ function bothChecked() {
   view('connected');
   const old = [...out.values()];
   sendIn({ t: 'cancel', up: true }, 'ids', old.filter(o => o.state === 'cancelled').map(o => o.id)); // in case it missed them
-  offer(old.filter(o => !['done', 'declined', 'cancelled'].includes(o.state)));
+  offer(old.filter(o => !['done', 'declined', 'cancelled', 'missing'].includes(o.state)));
   if (pc.localDescription.type === 'offer') for (let i = 1; i < LANES; i++) lane(i);
 }
 
@@ -410,6 +412,7 @@ function stop(it) {
   if (it.up) return void (queue = queue.filter(o => o !== it));
   it.segs = null;
   if (it.chain) it.chain = it.chain.then(() => it.w.abort()).then(() => it.rm?.()).catch(() => {}); // drop the half-written file
+  if (it.to === 'disk') rpc('rm', { dir: it.dir, name: it.name }).catch(() => {});
   zipReady(it.grp);
 }
 
@@ -465,8 +468,13 @@ const on = {
     }
   },
   // max: the largest message the other device takes (missing from older versions, which get 64 KB).
-  ok({ max }) {
+  ok({ max, v }) {
     if (theyOk) return;
+    if (v !== PROTO) {
+      log(`The other device speaks protocol ${v ?? 1}, this one ${PROTO}`, 'err');
+      send({ t: 'bye' });
+      return dropped('The other device is running a different version of WebSend. Reload the page on both devices, then connect again.');
+    }
     theyOk = true;
     chunk = Math.max(CHUNK, Math.min(BIG, +max || 0, pc.sctp?.maxMessageSize || 0));
     if (checked) bothChecked();
@@ -474,15 +482,39 @@ const on = {
   got({ id }) { const o = out.get(id); if (o) { o.n = o.size; o.state = 'done'; queue = queue.filter(x => x !== o); dirty.add(o); } },
   // The bytes that follow on this channel belong to file id from offset at.
   seg({ id, at }, ch) {
-    const it = inc.get(id), prev = ch.cur?.seg;
-    if (prev) prev.parts = [new Blob(prev.parts)]; // that segment is finished, so the browser can page it to disk
+    const it = inc.get(id);
     ch.cur = null;
     if (it?.state !== 'receiving' || !Number.isSafeInteger(at) || at < 0 || at >= it.size) return;
     const seg = { at, n: 0, parts: [] }, old = it.segs.get(at);
+    if (old?.ok) return; // already stored
     if (old) it.n -= old.n;
     it.segs.set(at, seg);
     ch.cur = { it, seg };
-    if (it.folder) write(it);
+  },
+  // The end of the segment on this channel, with the SHA-256 of its bytes. A match gets them stored.
+  async sum({ h }, ch) {
+    const { it, seg } = ch.cur || {};
+    ch.cur = null;
+    if (it?.state !== 'receiving' || it.segs.get(seg.at) !== seg) return;
+    if (!seg.n) return void it.segs.delete(seg.at);
+    const bytes = await new Blob(seg.parts).arrayBuffer();
+    seg.parts = null;
+    if (seg.at + seg.n > it.size || b64(await sha(bytes)) !== h) return redo(it, seg);
+    try { await keep(it, seg, bytes); } catch (e) { return fault(it, `Saving ${it.path} failed: ${why(e)}`); }
+    if (it.state !== 'receiving' || it.segs.get(seg.at) !== seg) return; // cancelled, or dropped by a reconnect
+    seg.ok = true;
+    it.v += seg.n;
+    dirty.add(it);
+    if (it.v >= it.size) finish(it);
+  },
+  // The receiver wants part of a file again (it failed its check).
+  again({ id, at, end }) {
+    const o = out.get(id);
+    if (o?.state !== 'sending' || !Number.isSafeInteger(at) || !Number.isSafeInteger(end) || at < 0 || end <= at || end > o.size) return;
+    o.left.push({ o, at, end });
+    o.n -= end - at;
+    if (!queue.includes(o)) queue.push(o);
+    pump();
   },
   async lane({ i, c }) {
     if (!Number.isInteger(i) || i < 1 || i >= LANES || typeof c !== 'string') return;
@@ -526,7 +558,8 @@ function onMessage(d, ch) {
 
 // Accepted files go out in segments of up to SEG bytes, each on whichever channel is free (the main one or a lane),
 // so one big file uses every lane and small files go out side by side. Each segment starts with a 'seg' header on
-// its channel. A paused file is skipped, and a pause or cancel takes effect at the next chunk.
+// its channel and ends with a 'sum' carrying the SHA-256 of the bytes it sent, which the receiver checks before
+// storing them. A paused file is skipped, and a pause or cancel takes effect at the next chunk.
 const live = o => o.state === 'sending' && !o.held;
 function take() {
   const o = queue.find(o => live(o) && (o.left.length || o.next < o.size));
@@ -545,21 +578,22 @@ async function run(ch) {
   let s;
   try {
     while (ch.readyState === 'open' && (s = take())) {
-      const { o } = s;
+      const { o } = s, from = s.at;
       ch.send(JSON.stringify({ t: 'seg', id: o.id, at: s.at }));
-      while (s.at < s.end && live(o)) {
-        const buf = await o.file.slice(s.at, Math.min(s.end, s.at + READ)).arrayBuffer();
-        for (let i = 0; i < buf.byteLength && live(o); i += chunk) {
-          if (ch.bufferedAmount > HIGH) await new Promise(r => ch.drain = r);
-          if (ch.readyState !== 'open') return;
-          const part = new Uint8Array(buf, i, Math.min(chunk, buf.byteLength - i));
-          ch.send(part);
-          s.at += part.byteLength;
-          o.n += part.byteLength;
-          moved += part.byteLength;
-        }
-        dirty.add(o);
+      const buf = await o.file.slice(s.at, s.end).arrayBuffer();
+      for (let i = 0; i < buf.byteLength && live(o); i += chunk) {
+        if (ch.bufferedAmount > HIGH) await new Promise(r => ch.drain = r);
+        if (ch.readyState !== 'open') return;
+        const part = new Uint8Array(buf, i, Math.min(chunk, buf.byteLength - i));
+        ch.send(part);
+        s.at += part.byteLength;
+        o.n += part.byteLength;
+        moved += part.byteLength;
       }
+      dirty.add(o);
+      const h = await sha(new Uint8Array(buf, 0, s.at - from));
+      if (ch.readyState !== 'open') return;
+      ch.send(JSON.stringify({ t: 'sum', h: b64(h) }));
       if (s.at < s.end && o.state === 'sending') o.left.push({ o, at: s.at, end: s.end }); // paused partway
       if (o.n >= o.size) queue = queue.filter(x => x !== o);
     }
@@ -571,43 +605,73 @@ async function run(ch) {
   }
 }
 
-// Segments can arrive in any order. Each keeps its own bytes until the file is complete.
+// Segments can arrive in any order. Each holds its bytes until its checksum arrives (see on.sum), then they're
+// stored where the file is going: it.to is 'disk' (browser storage, see Storage), 'folder' (one the user picked)
+// or 'mem' (memory, when the browser has no storage for files).
 function onChunk(buf, ch) {
   const { it, seg } = ch.cur || {};
   if (it?.state !== 'receiving' || it.segs.get(seg.at) !== seg) return; // cancelled, or the segment was sent again
-  const at = seg.at + seg.n;
+  if (seg.n + buf.byteLength > SEG) return; // more than a segment holds: its check fails and it's sent again
+  seg.parts.push(buf);
   seg.n += buf.byteLength;
   it.n += buf.byteLength;
   moved += buf.byteLength;
   dirty.add(it);
-  if (it.folder) write(it, w => w.write({ type: 'write', position: at, data: buf }));
-  else seg.parts.push(buf);
-  if (it.n >= it.size) finish(it);
 }
 
-// After a reconnect: how much of the file arrived from the start with no gap. Anything past a gap is dropped
-// and sent again.
-function kept(it) {
+function keep(it, seg, bytes) {
+  if (it.to === 'disk') return rpc('write', { dir: it.dir, name: it.name, at: seg.at, buf: bytes }, [bytes]);
+  if (it.to === 'folder') return write(it, w => w.write({ type: 'write', position: seg.at, data: bytes }));
+  seg.parts = [new Blob([bytes])]; // so the browser can page it out of memory
+}
+
+// A segment that failed its check is asked for again, a few times at most.
+function redo(it, seg) {
+  it.segs.delete(seg.at);
+  it.n -= seg.n;
+  dirty.add(it);
+  if (++it.bad > 3) return fault(it, `${it.path} kept arriving damaged`);
+  log(`Part of ${it.path} arrived damaged; asking for it again`, 'warn');
+  send({ t: 'again', id: it.id, at: seg.at, end: seg.at + seg.n });
+}
+
+function fault(it, msg) {
+  log(msg, 'err');
+  cancel(it);
+  it.state = 'error';
+}
+
+// How much of the file is checked and stored from the start with no gap.
+function prefix(it) {
   let n = 0;
-  for (const s of [...it.segs.values()].sort((a, b) => a.at - b.at)) if (s.at > n) it.segs.delete(s.at); else n = Math.max(n, s.at + s.n);
-  return it.n = n;
+  for (const s of [...it.segs.values()].sort((a, b) => a.at - b.at)) if (s.ok && s.at <= n) n = Math.max(n, s.at + s.n); else break;
+  return n;
+}
+// After a reconnect, everything past that is dropped and sent again.
+function kept(it) {
+  const n = prefix(it);
+  for (const s of it.segs.values()) if (!s.ok || s.at >= n) it.segs.delete(s.at);
+  return it.n = it.v = n;
 }
 const detach = it => chans().forEach(ch => { if (ch.cur?.it === it) ch.cur = null; });
 
-function finish(it) {
+async function finish(it) {
   detach(it);
+  try {
+    if (it.to === 'folder') await write(it).then(() => it.w.close());
+    else it.blob = it.to === 'disk' ? await rpc('close', { dir: it.dir, name: it.name })
+      : new Blob([...it.segs.values()].sort((a, b) => a.at - b.at).flatMap(s => s.parts));
+  } catch (e) { return fault(it, `Saving ${it.path} failed: ${why(e)}`); }
+  if (it.state !== 'receiving') return; // cancelled meanwhile
   send({ t: 'got', id: it.id });
-  if (it.folder) {
-    write(it).then(() => it.w.close()).then(() => it.state = 'done', e => { it.state = 'error'; log(`Writing ${it.path} failed: ${why(e)}`, 'err'); }).then(() => dirty.add(it));
-    return;
-  }
-  it.blob = new Blob([...it.segs.values()].sort((a, b) => a.at - b.at).flatMap(s => s.parts));
   it.segs = null;
-  it.a = el('a', { href: URL.createObjectURL(it.blob), download: it.path.replace(/[/\\]/g, '_'), textContent: 'Save', onclick: savedOnce });
-  it.note.after(' ', it.a);
-  if (it.auto) it.a.click();
   it.state = 'done';
   dirty.add(it);
+  if (it.blob) {
+    it.a = el('a', { href: URL.createObjectURL(it.blob), download: it.path.replace(/[/\\]/g, '_'), textContent: 'Save', onclick: savedOnce });
+    it.note.after(' ', it.a);
+    if (it.auto) it.a.click();
+  }
   zipReady(it.grp);
 }
 
@@ -638,11 +702,28 @@ async function saveZip(grp, got) {
   // The archive stays as a link too: browsers may block a download the page starts by itself.
   const show = x => { if (grp.zipOut?.href) URL.revokeObjectURL(grp.zipOut.href); grp.zipOut ? grp.zipOut.replaceWith(x) : grp.btns.append(' ', x); grp.zipOut = x; };
   show(el('small', { textContent: 'Zipping…' }));
+  if (grp.zipDisk) rpc('rm', grp.zipDisk).catch(() => {}); // the archive from last time
   try {
-    const a = el('a', { href: URL.createObjectURL(await downloadZip(files).blob()), download: name + '.zip', textContent: `Save ${name}.zip`, onclick: savedOnce });
+    const zip = downloadZip(files);
+    const blob = await disk ? await spool(zip.body, grp.zipDisk = { dir: TAB, name: 'zip-' + rid() }) : await zip.blob();
+    const a = el('a', { href: URL.createObjectURL(blob), download: name + '.zip', textContent: `Save ${name}.zip`, onclick: savedOnce });
     show(a);
     a.click();
   } catch (e) { show(el('small', { textContent: 'Zip failed: ' + e.message })); log('Zip failed: ' + why(e), 'err'); }
+}
+
+// Writes a stream into browser storage a segment at a time, and returns it as a file.
+async function spool(stream, to) {
+  const r = stream.getReader();
+  let pos = 0, parts = [], n = 0;
+  const put = async () => {
+    const buf = await new Blob(parts).arrayBuffer();
+    await rpc('write', { ...to, at: pos, buf }, [buf]);
+    pos += n; parts = []; n = 0;
+  };
+  for (let c; !(c = await r.read()).done;) { parts.push(c.value); if ((n += c.value.byteLength) >= SEG) await put(); }
+  if (n) await put();
+  return rpc('close', to);
 }
 
 async function openWriter(it) {
@@ -665,13 +746,16 @@ function write(it, step) {
 }
 
 // ---------- Files in ----------
+// A file that was being sent before a reload takes its old place when it's added again, so it resumes.
 function addFiles(list) { // [[File, relativePath]]
   if (!list.length) return;
-  const grp = group('↑ Sending');
+  let grp;
   const fresh = list.map(([file, path]) => {
-    const o = { id: rid(), file, path, size: file.size, n: 0, state: 'queued', up: true };
+    const old = [...out.values()].find(o => o.state === 'missing' && o.path === path && o.size === file.size && o.mod === file.lastModified);
+    if (old) return Object.assign(old, { file, state: 'queued' }), dirty.add(old), old;
+    const o = { id: rid(), file, path, size: file.size, mod: file.lastModified, dir: TAB, n: 0, state: 'queued', up: true };
     out.set(o.id, o);
-    addRow(grp, o);
+    addRow(grp ||= group('↑ Sending'), o);
     return o;
   });
   if (ready()) offer(fresh);
@@ -847,10 +931,10 @@ function addRow(grp, it) {
 
 // Incoming files are ticked by default. The buttons act on the ticked ones: a file not received yet
 // is accepted, and one already received is saved again.
-function askAccept(g, items) {
+function askAccept(g, items, title = '↓ Incoming') {
   let grp = groups.get(g);
   if (!grp) {
-    grp = group('↓ Incoming');
+    grp = group(title);
     const b = (label, mode) => el('button', { textContent: label, onclick: () => act(grp, mode) });
     grp.all = el('input', { type: 'checkbox', checked: true, onchange: () => grp.items.forEach(it => it.box.checked = grp.all.checked) });
     grp.btns = el('div', {}, el('label', {}, grp.all, ' Select all'), el('br'),
@@ -884,8 +968,17 @@ async function act(grp, mode) {
 async function respond(items, mode) {
   let folder = null;
   if (mode === 'dir') try { folder = await showDirectoryPicker({ mode: 'readwrite' }); } catch { return false; }
+  const to = folder ? 'folder' : await disk ? 'disk' : 'mem';
+  if (to === 'disk' && mode !== 'no') {
+    const need = items.reduce((t, it) => t + it.size, 0), { quota, usage } = await navigator.storage.estimate().catch(() => ({}));
+    if (need > quota - usage) {
+      say(`Not enough space: these need ${fmt(need)} but the browser can store ${fmt(Math.max(quota - usage, 0))} more.` +
+        (window.showDirectoryPicker ? ' Save to a folder instead, or pick fewer files.' : ' Free up space or pick fewer files.'), true);
+      return false;
+    }
+  }
   items.forEach(it => {
-    Object.assign(it, { state: mode === 'no' ? 'declined' : 'receiving', folder, auto: mode === 'dl', segs: new Map() });
+    Object.assign(it, { state: mode === 'no' ? 'declined' : 'receiving', folder, to, dir: TAB, name: rid(), auto: mode === 'dl', segs: new Map(), v: 0, bad: 0 });
     dirty.add(it);
   });
   if (mode === 'no') sendIn({ t: 'decline' }, 'ids', items.map(it => it.id));
@@ -896,11 +989,12 @@ async function respond(items, mode) {
   return true;
 }
 
-const LABEL = { queued: 'waiting for connection', offered: 'waiting for them to accept', pending: '', declined: 'declined', error: 'failed', cancelled: 'cancelled' };
+const LABEL = { queued: 'waiting for connection', offered: 'waiting for them to accept', pending: '', declined: 'declined', error: 'failed', cancelled: 'cancelled', missing: 'add it again to carry on' };
 function paint(it) {
   const done = it.state === 'done', live = LIVE.includes(it.state);
   if (it.save) it.save.hidden = it.state !== 'pending';
-  it.pause.hidden = it.stop.hidden = !live;
+  it.pause.hidden = !live;
+  it.stop.hidden = !live && it.state !== 'missing';
   it.pause.textContent = it.held ? 'Resume' : 'Pause';
   it.bar.value = done ? 1 : it.size ? it.n / it.size : 0;
   it.note.textContent = done ? (it.up ? 'sent ✓' : 'received ✓') : live && it.held ? 'paused' : LABEL[it.state] ?? Math.floor(it.bar.value * 100) + '%';
@@ -913,7 +1007,7 @@ function textEntry(dir, v) {
 
 let lastMoved = 0;
 setInterval(() => {
-  dirty.forEach(paint);
+  dirty.forEach(it => { paint(it); remember(it); });
   dirty.clear();
   if (connected) say(stall ? 'Connection interrupted. Trying to reconnect…' : checked && !theyOk ? 'Connected. Waiting for the other device to confirm the number…'
     : 'Connected' + route + (moved > lastMoved ? ` · ${fmt((moved - lastMoved) * 2)}/s` : ''), !!stall);
@@ -949,18 +1043,30 @@ $('back').onclick = () => {
 $('startOver').onclick = () => reset();
 $('sasYes').onclick = () => {
   checked = true;
-  send({ t: 'ok', max: +(pc.localDescription.sdp.match(/a=max-message-size:(\d+)/)?.[1] ?? 65536) }); // RFC 8841's default
+  send({ t: 'ok', v: PROTO, max: +(pc.localDescription.sdp.match(/a=max-message-size:(\d+)/)?.[1] ?? 65536) }); // RFC 8841's default
   if (theyOk) bothChecked(); else view('connected');
 };
 $('sasNo').onclick = () => hangup("Disconnected because the numbers didn't match, so another device may have answered your invite. Connect again, ideally side by side.");
 $('hangup').onclick = () => hangup('Disconnected.');
 // Tells the other device first, so it drops at once instead of waiting for the connection to time out.
 function hangup(msg) { const p = pc; send({ t: 'bye' }); dropped(msg); p?.close(); clearFiles(); }
-addEventListener('pagehide', () => send({ t: 'bye' }));
+// Closing or reloading the tab also removes every file it stored, unfinished ones too (see Storage).
+addEventListener('pagehide', e => {
+  send({ t: 'bye' });
+  if (e.persisted) return;
+  inc.forEach(forget);
+  owned.forEach(dir => {
+    try { localStorage.setItem(CLOSED + dir, ''); } catch {}
+    rpc('rm', { dir }).catch(() => {});
+  });
+});
 
-// A deliberate disconnect forgets every transfer, unlike a dropped connection, which keeps them to resume.
+// A deliberate disconnect forgets every transfer, unlike a dropped connection, which keeps them to resume,
+// and removes every file this tab stored.
 function clearFiles() {
   for (const it of inc.values()) { if (it.a) URL.revokeObjectURL(it.a.href); if (it.grp.zipOut?.href) URL.revokeObjectURL(it.grp.zipOut.href); }
+  [...out.values(), ...inc.values()].forEach(forget);
+  owned.forEach(dir => rpc('rm', { dir }).catch(() => {}));
   out.clear(); inc.clear(); groups.clear(); dirty.clear();
   $('log').replaceChildren();
 }
@@ -1167,6 +1273,94 @@ function handoff(code) {
   bc.postMessage({ q: code, n });
   setTimeout(() => { bc.removeEventListener('message', claim); if (!taken) useCode(code); }, 400);
 }
+
+// ---------- Storage ----------
+// Received files are written to the browser's private storage as they arrive (store.js), not held in memory.
+// Each tab writes into its own folder and holds a lock on it while it's open, and IndexedDB keeps a note of each
+// unfinished transfer. Nothing runs while no WebSend tab is open, so disk use is kept short:
+// - a cancelled, declined or failed file is removed at once, and Disconnect removes all of the tab's files;
+// - closing or reloading the tab removes all of its files, so a download resumes after a reload only if the tab
+//   crashed or the browser discarded it in the background. The browser may stop the removal partway, so the tab
+//   also marks its folders closed in localStorage, which is written at once, and the next visit removes the rest;
+// - every visit removes whatever no open tab is using, except unfinished downloads touched within KEEP, which it
+//   takes over to resume;
+// - nothing asks for persistent storage, so the browser may also clear it when the disk runs low.
+// Files being sent are noted too (a few bytes, no disk), so after a reload they resume once they're added again.
+const db = self.indexedDB && navigator.locks ? idbKeyval.createStore('websend', 'transfers') : null;
+const owned = new Set([TAB]); // folders this tab holds
+const CLOSED = 'websend-closed:'; // + a folder whose tab closed normally
+let worker, calls = 0;
+const waits = new Map();
+function rpc(op, a, xfer = []) {
+  if (!worker) {
+    worker = new Worker('store.js');
+    worker.onmessage = ({ data: { n, v, e } }) => { const [r, j] = waits.get(n); waits.delete(n); e ? j(new Error(e)) : r(v); };
+  }
+  return new Promise((r, j) => { waits.set(++calls, [r, j]); worker.postMessage({ n: calls, op, ...a }, xfer); });
+}
+// Holds the lock until the tab closes, if no other tab holds it. Resolves whether it got it.
+const lock = name => new Promise(r => navigator.locks.request('websend:' + name, { ifAvailable: true }, l => { r(!!l); return l && new Promise(() => {}); }));
+const key = it => `${it.dir}/${it.up ? 'o' : 'i'}/${it.id}`;
+
+// What carries on after a reload or crash: files still to send (they have to be added again), and downloads part
+// stored (after a crash only, since closing the tab removes them).
+function remember(it) {
+  const live = it.up ? ['queued', 'offered', 'sending', 'missing'].includes(it.state) : it.state === 'receiving' && it.to === 'disk';
+  if (!db || !live) return forget(it);
+  it.rec = true;
+  const { dir, id, path, size } = it;
+  idbKeyval.set(key(it), it.up ? { dir, id, path, size, up: true, mod: it.mod, t: Date.now() }
+    : { dir, id, path, size, name: it.name, auto: it.auto, k: prefix(it), t: Date.now() }, db).catch(() => {});
+}
+function forget(it) {
+  if (it.rec) idbKeyval.del(key(it), db).catch(() => {});
+  it.rec = false;
+}
+
+// Takes over the folders and notes of tabs that have gone: downloads in one that crashed come back to resume, and
+// the rest is removed. Sends come back from any (they store nothing). Resolves whether this browser can store files.
+async function sweep() {
+  if (!db) return false;
+  await lock(TAB);
+  const recs = await idbKeyval.values(db), dirs = await rpc('ls', {}).catch(() => null);
+  const all = new Set([...recs.map(r => r.dir), ...Object.keys(dirs || {})]);
+  for (const dir of all) {
+    if (dir === TAB || !await lock(dir)) continue; // a tab that's still open uses it
+    owned.add(dir);
+    let closed = false;
+    try { closed = localStorage.getItem(CLOSED + dir) !== null; localStorage.removeItem(CLOSED + dir); } catch {}
+    try {
+      const files = dirs?.[dir] ? await rpc('ls', { dir }) : {}, mine = recs.filter(r => r.dir === dir);
+      const keep = mine.filter(r => Date.now() - r.t < KEEP && (r.up || !closed && files[r.name] >= r.k));
+      mine.filter(r => !keep.includes(r)).forEach(r => idbKeyval.del(key(r), db));
+      if (!keep.some(r => !r.up)) await rpc('rm', { dir });
+      else for (const name in files) if (!keep.some(r => r.name === name)) await rpc('rm', { dir, name });
+      restore(keep);
+    } catch (e) { log(`Storage: couldn't tidy up ${dir}: ${why(e)}`, 'warn'); }
+  }
+  // Marks for folders the closing tab managed to remove itself.
+  try { for (const k of Object.keys(localStorage)) if (k.startsWith(CLOSED) && !all.has(k.slice(CLOSED.length))) localStorage.removeItem(k); } catch {}
+  if (inc.size || out.size) log(`Storage: ${inc.size} download${inc.size === 1 ? '' : 's'} and ${out.size} send${out.size === 1 ? '' : 's'} to resume from before`);
+  return !!dirs;
+}
+
+function restore(recs) {
+  const ins = [], outs = [];
+  for (const r of recs) {
+    if (r.up ? out.has(r.id) : inc.has(r.id)) continue;
+    if (r.up) outs.push({ ...r, n: 0, state: 'missing', rec: true });
+    else ins.push({ ...r, n: r.k, v: r.k, state: 'receiving', to: 'disk', held: false, bad: 0, rec: true, segs: new Map(r.k ? [[0, { at: 0, n: r.k, ok: true }]] : []) });
+  }
+  if (outs.length) {
+    const grp = group('↑ Unfinished: add these files again to carry on');
+    outs.forEach(o => { out.set(o.id, o); addRow(grp, o); });
+  }
+  if (ins.length) {
+    ins.forEach(it => inc.set(it.id, it));
+    askAccept('before', ins, '↓ Unfinished: connect to the same device again to carry on');
+  }
+}
+const disk = sweep().catch(e => (log('Storage: ' + why(e), 'warn'), false));
 
 view('start');
 const hash = decodeURIComponent(location.hash.slice(1));
