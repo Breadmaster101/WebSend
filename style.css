@@ -28,3 +28,5 @@ fieldset span { grid-column: 2; color: GrayText; }
 #diagLog li { margin: 0 0 .25rem; white-space: pre-wrap; }
 #diagLog .warn { color: light-dark(#a50, #fb4); }
 #diagLog .err { color: light-dark(#b00, #f77); font-weight: bold; }
+#net { border-left: .25rem solid light-dark(#a50, #fb4); padding: 0 .75rem; }
+#net p { margin: .5rem 0; }

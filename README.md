@@ -17,13 +17,13 @@ Each time, the choice is one of:
 
 The invite and the reply can use different methods. For example, send a PC's invite to your phone as a link, then let the phone chirp its reply back. Sound works best with the devices close together and the volume up.
 
-Once connected, check both screens show the same 6-digit number and tap **Yes, it matches**. Either side can then send files, folders or text, by picking them, dropping them on the page or pasting them (a pasted screenshot is sent as an image; pasted text goes into the text box to check before sending). The receiver ticks the files they want (all are ticked to start, with **Select all** to toggle) and taps **Download**, **Download as .zip** (keeps folder structure), **Save to folder…** (Chrome/Edge desktop) or **Decline**. Each file also has its own **Save** button. Unticked files stay available, and received ones can be downloaded again the same way. While a file is on its way, either side can **Pause**, **Resume** or **Cancel** it.
+Once connected, check both screens show the same 6-digit number and tap **Yes, it matches**. Either side can then send files, folders or text, by picking them, dropping them on the page or pasting them (a pasted screenshot is sent as an image; pasted text goes into the text box to check before sending). The receiver ticks the files they want (all are ticked to start, with **Select all** to toggle) and taps **Download**, **Download as .zip** (keeps folder structure), **Save to folder…** (Chrome/Edge desktop) or **Decline**. Each file also has its own **Save** button. Unticked files stay available, and received ones can be downloaded again the same way. While a file is on its way, either side can **Pause**, **Resume** or **Cancel** it. Each file shows its speed and time left, and the top of the page (and the tab's title) shows how far the whole batch has got.
 
 If the connection drops, connect again. Unfinished transfers resume where they stopped, even after a reload on the sending device (add the files again) or a crash on the receiving one. Reloading or closing the receiving tab deletes its unfinished downloads, so those start over.
 
 ## Host
 
-Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, `app.js`, `sound.js`, `tap.js`, `store.js`, `style.css`, `qrcode.js`, `jsQR.js`, `client-zip.js`, `idb-keyval.js`, plus `LICENSE` and `THIRD-PARTY-NOTICES` so the license texts travel with the code. No build step.
+Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, the `app/` folder, `sound.js`, `tap.js`, `store.js`, `style.css`, `qrcode.js`, `jsQR.js`, `client-zip.js`, `idb-keyval.js`, plus `LICENSE` and `THIRD-PARTY-NOTICES` so the license texts travel with the code. No build step.
 
 ## Security
 
@@ -36,7 +36,7 @@ Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `in
 - **Receiver must accept** every batch of files. Received names are only ever shown as text.
 - **Every 4 MB is checked.** The sender sends the SHA-256 of each segment after its bytes, and the receiver stores a segment only once it matches; a damaged one is sent again.
 - **Strict Content-Security-Policy:** only the page's own scripts run, and there are no third-party requests.
-- **One third party, optional:** Google's public STUN servers tell each device its public address so devices on different networks can connect. Two are asked so the connection log can spot symmetric NAT. They see IP addresses only, never data. Each lane asks them again. Set `ICE = []` in `app.js` for same-network-only with zero third parties.
+- **One third party, optional:** Google's public STUN servers tell each device its public address so devices on different networks can connect. Two are asked so the connection log can spot symmetric NAT. They see IP addresses only, never data. The joining device also asks them as soon as you tap **Join a connection**, to check its network, and each lane asks them again. Set `ICE = []` in `app/config.js` for same-network-only with zero third parties.
 
 ## Sound
 
@@ -67,6 +67,8 @@ Measured between two Chrome instances on one PC, sending 64–128 MB, old vs new
 | 120 Mbit/s, 6 ms round trip, 0.1% loss (Wi-Fi-like) | ~7 MB/s | ~12 MB/s |
 
 ## Troubleshooting
+
+Before any code is swapped, each device checks what its network says about connecting from elsewhere: the starting device from its invite, and the joining device when you tap **Join a connection**. The joining device also reads the starting device's network from the invite. If a device has no public address, its network gives each connection a different public port (symmetric NAT), or it comes through Cloudflare WARP, the connection screens say so and suggest putting both devices on the same Wi-Fi. It's a warning, not a block: two devices on the same network still connect.
 
 The **Connection log** at the bottom of the page records each step of connecting: the addresses each device found, STUN errors, connectivity check states and, if it fails, every address pair tried with how many checks were sent and answered, plus a best guess at the cause. It opens by itself on an error. Tap **Copy log** on both devices and compare. It includes IP addresses, so share it only with people you trust.
 

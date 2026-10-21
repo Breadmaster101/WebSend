@@ -12,12 +12,13 @@
 <script src="client-zip.js" defer></script>
 <script src="idb-keyval.js" defer></script>
 <script src="sound.js" defer></script>
-<script src="app.js" defer></script>
+<script type="module" src="app/main.js"></script>
 </head>
 <body>
 <header>
   <h1>WebSend</h1>
   <p id="status" role="status"></p>
+  <p id="total" hidden><span id="totalText"></span> <progress id="totalBar" max="1" value="0" aria-label="Overall progress"></progress></p>
 </header>
 
 <section id="start">
@@ -40,6 +41,7 @@
   <p id="role"></p>
   <p id="steps" aria-label="Progress"></p>
   <p id="got" hidden>✓ Got the invite</p>
+  <div id="net" role="status" hidden></div>
 
   <div id="ask">
     <h2 id="askTitle"></h2>
