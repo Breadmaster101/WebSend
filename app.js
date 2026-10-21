@@ -133,9 +133,13 @@ function newPeer() {
   p.onicecandidate = ({ candidate: c }) => c?.candidate && log('Found address: ' + (c.type ? `${c.type} ${c.protocol} ${c.address}:${c.port}` : c.candidate));
   p.onicecandidateerror = e => log(`STUN ${e.url} error ${e.errorCode} on ${e.address ?? '?'}: ${e.errorText} (harmless if a public address is found)`);
   p.onicegatheringstatechange = () => log('Address search: ' + p.iceGatheringState);
+  // The joiner starts checking as soon as it has the invite, but nothing answers until the starter takes in the
+  // reply, so browsers (Safari after ~15 s) may call the checks failed meanwhile. They start again once the reply
+  // goes in, so that's expected, not an error. A real failure shows on the starter, or as the joiner's 2-minute timeout.
+  const early = () => !connected && p.localDescription?.type === 'answer';
   p.oniceconnectionstatechange = () => {
     const s = p.iceConnectionState;
-    log('Connectivity checks: ' + s, s === 'failed' ? 'err' : s === 'disconnected' ? 'warn' : '');
+    log('Connectivity checks: ' + s, s === 'failed' ? (early() ? '' : 'err') : s === 'disconnected' ? 'warn' : '');
     if (p !== pc || !connected) return;
     // A connection that stops answering takes the browser about half a minute to call failed. Say so at once,
     // and count it as dropped if it hasn't come back within a few seconds.
@@ -145,9 +149,11 @@ function newPeer() {
   p.onconnectionstatechange = () => {
     if (p !== pc) return;
     const s = p.connectionState;
-    log('Connection: ' + s, s === 'failed' ? 'err' : '');
+    log('Connection: ' + s, s === 'failed' && !early() ? 'err' : '');
     if (s !== 'failed') return;
-    if (connected) dropped(); else if (p.localDescription?.type === 'offer') fail('every address pair failed'); else report(p);
+    if (connected) dropped();
+    else if (p.localDescription?.type === 'offer') fail('every address pair failed');
+    else log('No answer from the other device yet, which is normal until it takes in your reply. Checks start again when it does.');
   };
 }
 
@@ -156,7 +162,12 @@ const gathered = p => new Promise(r => {
   const check = () => p.iceGatheringState === 'complete' && r();
   p.addEventListener('icegatheringstatechange', check);
   check();
-  setTimeout(() => { if (p === pc && p.iceGatheringState !== 'complete') log('Address search still running after 3 s; using what it found so far.', 'warn'); r(); }, 3000);
+  // Extra network adapters (VPNs, virtual machines) often never hear back from STUN. That only matters if no public address was found.
+  setTimeout(() => {
+    const pub = /typ srflx/.test(p.localDescription?.sdp);
+    if (p === pc && p.iceGatheringState !== 'complete') log(`Address search still running after 3 s; using what it found so far${pub ? ', which includes a public address' : ''}.`, pub ? '' : 'warn');
+    r();
+  }, 3000);
 }).then(() => encode(p.localDescription));
 
 // Each returns the new code, or nothing if the user moved on (Back, or another code) meanwhile.
