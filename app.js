@@ -7,8 +7,10 @@
 // Finds public addresses across networks; [] = same-LAN only, no third party at all. Two servers let the log spot
 // networks that give each destination a different public port (symmetric NAT), which blocks direct connections.
 const ICE = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
-const CHUNK = 64 << 10, READ = 1 << 20;                 // send 64 KB messages, read files 1 MB at a time
+const CHUNK = 64 << 10, BIG = 256 << 10;                // send 64 KB messages, or 256 KB once the other device says it takes them
+const READ = 1 << 20, SEG = 4 << 20;                    // read files 1 MB at a time, hand them to lanes 4 MB at a time
 const HIGH = 8 << 20, LOW = 1 << 20;                    // send-buffer backpressure
+const LANES = 3;                                        // connections files travel over (see Lanes)
 const BATCH = 200;                                      // files per control message (keeps messages small)
 
 const $ = id => document.getElementById(id);
@@ -17,11 +19,13 @@ const fmt = b => { let i = 0; while (b >= 1024 && i < 4) { b /= 1024; i++; } ret
 const rid = () => Math.random().toString(36).slice(2);
 
 const out = new Map(), inc = new Map(), groups = new Map(), dirty = new Set();
-let pc, dc, myCode, lastOffer, timer, stall, wake, screen, cur = null, connected = false, queue = [], pumping = false, drain = () => {}, moved = 0, route = '';
+let pc, dc, myCode, lastOffer, timer, stall, wake, screen, connected = false, queue = [], chunk = CHUNK, moved = 0, route = '';
 // role: 'starting' | 'joining'. replying: the joiner has taken in the invite. toReply: the starter moved on to getting
 // the reply. sendM / getM: how this device gives its code and takes in the other's ('qr' | 'link' | 'sound').
 // chirping: the user tapped Play sound. checked: the user confirmed both screens show the same number.
-let role = null, replying = false, toReply = false, sendM = null, getM = null, chirping = false, checked = false;
+// theyOk: the other device says its user confirmed too. Files and text only move once both have.
+let role = null, replying = false, toReply = false, sendM = null, getM = null, chirping = false, checked = false, theyOk = false;
+const ready = () => connected && checked && theyOk;
 
 // ---------- Connection log ----------
 // Shown on the page (not just the console) so a failed connection can be diagnosed and the log copied from any device.
@@ -115,17 +119,22 @@ function decode(code, mid = '0') {
 }
 
 // ---------- Peer connection ----------
+// A sender waiting on a full buffer parks its wake-up in ch.drain.
+function wire(ch) {
+  ch.binaryType = 'arraybuffer';
+  ch.bufferedAmountLowThreshold = LOW;
+  ch.onbufferedamountlow = () => ch.drain?.();
+  return ch;
+}
+
 function newPeer() {
   dropped();
   pc?.close();
   const p = pc = new RTCPeerConnection({ iceServers: ICE });
-  const ch = dc = p.createDataChannel('websend', { negotiated: true, id: 0 });
-  ch.binaryType = 'arraybuffer';
-  ch.bufferedAmountLowThreshold = LOW;
-  ch.onbufferedamountlow = () => drain();
+  const ch = dc = wire(p.createDataChannel('websend', { negotiated: true, id: 0 }));
   ch.onopen = () => ch === dc && opened();
   ch.onclose = () => ch === dc && dropped();
-  ch.onmessage = e => ch === dc && onMessage(e.data);
+  ch.onmessage = e => ch === dc && onMessage(e.data, ch);
   ch.onerror = e => ch === dc && log('Data channel error: ' + why(e.error), 'err');
   log('New connection attempt');
   pairs.clear();
@@ -248,12 +257,63 @@ function reset(msg) {
 function opened() {
   log('Connected: data channel open');
   connected = true;
-  checked = false;
+  checked = theyOk = false;
+  chunk = CHUNK;
   clearTimeout(timer);
   view('connected');
   startSas();
   showRoute(pc);
-  offer([...out.values()].filter(o => o.state !== 'done' && o.state !== 'declined'));
+}
+
+// Both users confirmed the number, so unfinished transfers can carry on. Until then nothing is offered, so a
+// device that took over the connection learns nothing about the files, even on a reconnect.
+function bothChecked() {
+  view('connected');
+  const old = [...out.values()];
+  sendIn({ t: 'cancel', up: true }, 'ids', old.filter(o => o.state === 'cancelled').map(o => o.id)); // in case it missed them
+  offer(old.filter(o => !['done', 'declined', 'cancelled'].includes(o.state)));
+  if (pc.localDescription.type === 'offer') for (let i = 1; i < LANES; i++) lane(i);
+}
+
+// ---------- Lanes ----------
+// A single connection backs off on every lost packet, so on Wi-Fi or across the internet it fills only part of the
+// link; a few side by side fill much more of it (1.5–2x in tests with loss or delay). Once both users have checked
+// the number, the starting device opens extra connections (lanes), swapping their codes over the checked channel.
+// Each code carries its lane's key fingerprint, so a lane is as trustworthy as the channel it was agreed on.
+// Files go out in segments that any free lane picks up; see pump().
+const lanes = new Map();
+// theirs: the other device's code for this lane, when it opened it.
+async function lane(i, theirs) {
+  const main = pc, p = new RTCPeerConnection({ iceServers: ICE }), ch = wire(p.createDataChannel('lane', { negotiated: true, id: 0 }));
+  lanes.set(i, { p, ch });
+  p.onconnectionstatechange = () => p.connectionState === 'failed' && log(`Lane ${i} failed; files go over the other connections`, 'warn');
+  ch.onopen = () => { log(`Lane ${i} open`); pump(); };
+  ch.onclose = () => lanes.get(i)?.ch === ch && lost(i, ch);
+  ch.onmessage = e => lanes.get(i)?.ch === ch && onMessage(e.data, ch);
+  try {
+    if (theirs) await p.setRemoteDescription(decode(theirs));
+    await p.setLocalDescription();
+    const code = await gathered(p);
+    if (main === pc && connected) send({ t: 'lane', i, c: code }); else p.close();
+  } catch (e) { if (main === pc) log(`Lane ${i} failed: ${why(e)}`, 'warn'); }
+}
+
+// Whatever a lane that drops on its own had on the way may not have arrived. So files being sent are offered again,
+// the receiver answers with how much it has, as after a reconnect, and the rest goes over the remaining channels.
+function lost(i, ch) {
+  log(`Lane ${i} closed`, 'warn');
+  lanes.get(i).p.close();
+  lanes.delete(i);
+  ch.drain?.();
+  if (!ready()) return;
+  const again = [...out.values()].filter(o => o.state === 'sending');
+  queue = queue.filter(o => !again.includes(o));
+  offer(again);
+}
+
+function closeLanes() {
+  for (const { p, ch } of lanes.values()) { p.close(); ch.drain?.(); }
+  lanes.clear();
 }
 
 // Both screens show the same number only if each device holds the key the other expected. A match rules out
@@ -300,9 +360,9 @@ function dropped(msg = 'Disconnected. Connect again to carry on; unfinished tran
   clearTimeout(stall);
   stall = null;
   route = '';
-  cur = null;
   queue = [];
-  drain();
+  dc?.drain?.();
+  closeLanes();
   for (const o of out.values()) if (o.state === 'sending' || o.state === 'offered') { o.state = 'queued'; dirty.add(o); }
   reset(msg);
 }
@@ -328,7 +388,29 @@ const sendIn = (msg, key, arr) => { for (let i = 0; i < arr.length; i += BATCH) 
 
 function offer(list) {
   list.forEach(o => { o.state = 'offered'; dirty.add(o); });
-  sendIn({ t: 'offer', g: rid() }, 'files', list.map(({ id, path, size }) => ({ id, path, size })));
+  sendIn({ t: 'offer', g: rid() }, 'files', list.map(({ id, path, size, held }) => ({ id, path, size, held: !!held })));
+}
+
+// Pause, resume or cancel a file from either end. The other device mirrors it; only the sender's pump acts on a pause.
+// up: the file goes out from the device sending the message, so the one getting it looks it up among incoming files.
+const LIVE = ['queued', 'offered', 'sending', 'receiving'];
+function hold(it, on) {
+  it.held = on;
+  dirty.add(it);
+  send({ t: 'hold', ids: [it.id], on, up: !!it.up });
+  if (!on) pump();
+}
+function cancel(it) {
+  send({ t: 'cancel', ids: [it.id], up: !!it.up });
+  stop(it);
+}
+function stop(it) {
+  it.state = 'cancelled';
+  dirty.add(it);
+  if (it.up) return void (queue = queue.filter(o => o !== it));
+  it.segs = null;
+  if (it.chain) it.chain = it.chain.then(() => it.w.abort()).then(() => it.rm?.()).catch(() => {}); // drop the half-written file
+  zipReady(it.grp);
 }
 
 const on = {
@@ -338,35 +420,76 @@ const on = {
       const it = inc.get(f.id);
       if (!it) {
         if (!Number.isSafeInteger(f.size) || f.size < 0) continue;
-        const n = { id: String(f.id), path: String(f.path), size: f.size, n: 0, state: 'pending' };
+        const n = { id: String(f.id), path: String(f.path), size: f.size, n: 0, state: 'pending', held: !!f.held };
         inc.set(n.id, n);
         fresh.push(n);
-      } else if (it.state === 'receiving') resume.push([it.id, it.n]);
-      else if (it.state === 'done' || it.state === 'error') send({ t: 'got', id: it.id });
+      } else if (it.state === 'receiving') {
+        // A pause that either side made while the connection was down holds on both.
+        if (f.held && !it.held) { it.held = true; dirty.add(it); }
+        detach(it); // bytes still on the way from before belong to segments that will be sent again
+        resume.push([it.id, kept(it), !!it.held]);
+      } else if (it.state === 'done' || it.state === 'error') send({ t: 'got', id: it.id });
       else if (it.state === 'declined') send({ t: 'decline', ids: [it.id] });
+      else if (it.state === 'cancelled') send({ t: 'cancel', ids: [it.id], up: false });
     }
     sendIn({ t: 'accept' }, 'files', resume);
     if (fresh.length) askAccept(String(g), fresh);
   },
   accept({ files }) {
-    for (const [id, n] of files) {
+    for (const [id, n, held] of files) {
       const o = out.get(id);
       if (o?.state !== 'offered') continue;
-      o.n = Math.min(Math.max(+n || 0, 0), o.size);
+      o.n = o.next = Math.min(Math.max(+n || 0, 0), o.size); // sent so far, and where the next segment starts
+      o.left = []; // segments to send again: cut short by a pause, or lost with their lane
       o.state = 'sending';
+      if (held) o.held = true;
       queue.push(o);
       dirty.add(o);
     }
     pump();
   },
   decline({ ids }) { ids.forEach(id => { const o = out.get(id); if (o) { o.state = 'declined'; dirty.add(o); } }); },
-  got({ id }) { const o = out.get(id); if (o) { o.n = o.size; o.state = 'done'; dirty.add(o); } },
-  file({ id }) {
-    const it = inc.get(id);
-    cur = it?.state === 'receiving' ? it : null;
-    if (!cur) return;
-    if (it.folder && !it.chain) it.chain = openWriter(it.folder, it.path).then(w => it.w = w);
-    if (it.n >= it.size) finish(it);
+  hold({ ids, on, up }) {
+    for (const id of ids) {
+      const it = (up ? inc : out).get(id);
+      if (!it || !LIVE.includes(it.state) && it.state !== 'pending') continue;
+      it.held = !!on;
+      dirty.add(it);
+    }
+    if (!on) pump();
+  },
+  cancel({ ids, up }) {
+    for (const id of ids) {
+      const it = (up ? inc : out).get(id);
+      if (it && (LIVE.includes(it.state) || it.state === 'pending')) stop(it);
+    }
+  },
+  // max: the largest message the other device takes (missing from older versions, which get 64 KB).
+  ok({ max }) {
+    if (theyOk) return;
+    theyOk = true;
+    chunk = Math.max(CHUNK, Math.min(BIG, +max || 0, pc.sctp?.maxMessageSize || 0));
+    if (checked) bothChecked();
+  },
+  got({ id }) { const o = out.get(id); if (o) { o.n = o.size; o.state = 'done'; queue = queue.filter(x => x !== o); dirty.add(o); } },
+  // The bytes that follow on this channel belong to file id from offset at.
+  seg({ id, at }, ch) {
+    const it = inc.get(id), prev = ch.cur?.seg;
+    if (prev) prev.parts = [new Blob(prev.parts)]; // that segment is finished, so the browser can page it to disk
+    ch.cur = null;
+    if (it?.state !== 'receiving' || !Number.isSafeInteger(at) || at < 0 || at >= it.size) return;
+    const seg = { at, n: 0, parts: [] }, old = it.segs.get(at);
+    if (old) it.n -= old.n;
+    it.segs.set(at, seg);
+    ch.cur = { it, seg };
+    if (it.folder) write(it);
+  },
+  async lane({ i, c }) {
+    if (!Number.isInteger(i) || i < 1 || i >= LANES || typeof c !== 'string') return;
+    if (c[0] === 'o') return void (lanes.has(i) || lane(i, c));
+    const p = lanes.get(i)?.p;
+    try { await p?.setRemoteDescription(decode(c, p.localDescription.sdp.match(/a=mid:(\S+)/)[1])); }
+    catch (e) { log(`Lane ${i} failed: ${why(e)}`, 'warn'); }
   },
   text({ v }) { textEntry('↓', String(v)); },
   // Reveal only once the other side has committed, and only after this side's own commitment has gone out.
@@ -389,67 +512,97 @@ const on = {
   bye() { dropped('The other device disconnected.'); },
 };
 
-function onMessage(d) {
-  if (typeof d !== 'string') return onChunk(d);
-  try { const m = JSON.parse(d); if (Object.hasOwn(on, m.t)) on[m.t](m); } catch (e) { log(`Bad message from the other device: ${why(e)}`, 'err'); }
+// Until both users have confirmed the number, only the check itself (and hanging up) gets through.
+const EARLY = ['commit', 'reveal', 'ok', 'bye'];
+function onMessage(d, ch) {
+  if (typeof d !== 'string') return ready() && onChunk(d, ch);
+  try {
+    const m = JSON.parse(d);
+    if (!Object.hasOwn(on, m.t)) return;
+    if (ready() || EARLY.includes(m.t)) on[m.t](m, ch);
+    else log(`Ignored a "${m.t}" message that came before the number was confirmed`, 'warn');
+  } catch (e) { log(`Bad message from the other device: ${why(e)}`, 'err'); }
 }
 
-// Sends accepted files one after another, respecting the channel's buffer.
-async function pump() {
-  if (pumping) return;
-  pumping = true;
-  const ch = dc;
+// Accepted files go out in segments of up to SEG bytes, each on whichever channel is free (the main one or a lane),
+// so one big file uses every lane and small files go out side by side. Each segment starts with a 'seg' header on
+// its channel. A paused file is skipped, and a pause or cancel takes effect at the next chunk.
+const live = o => o.state === 'sending' && !o.held;
+function take() {
+  const o = queue.find(o => live(o) && (o.left.length || o.next < o.size));
+  if (!o) return;
+  if (o.left.length) return o.left.shift();
+  const s = { o, at: o.next, end: Math.min(o.size, o.next + SEG) };
+  o.next = s.end;
+  return s;
+}
+
+const chans = () => [dc, ...[...lanes.values()].map(l => l.ch)].filter(ch => ch?.readyState === 'open');
+const pump = () => chans().forEach(run);
+async function run(ch) {
+  if (ch.busy) return;
+  ch.busy = true;
+  let s;
   try {
-    while (queue.length && ch === dc && ch.readyState === 'open') {
-      const o = queue[0];
-      ch.send(JSON.stringify({ t: 'file', id: o.id }));
-      while (o.n < o.size) {
-        const buf = await o.file.slice(o.n, o.n + READ).arrayBuffer();
-        for (let i = 0; i < buf.byteLength; i += CHUNK) {
-          if (ch.bufferedAmount > HIGH) await new Promise(r => drain = r);
-          if (ch !== dc || ch.readyState !== 'open') return;
-          const part = new Uint8Array(buf, i, Math.min(CHUNK, buf.byteLength - i));
+    while (ch.readyState === 'open' && (s = take())) {
+      const { o } = s;
+      ch.send(JSON.stringify({ t: 'seg', id: o.id, at: s.at }));
+      while (s.at < s.end && live(o)) {
+        const buf = await o.file.slice(s.at, Math.min(s.end, s.at + READ)).arrayBuffer();
+        for (let i = 0; i < buf.byteLength && live(o); i += chunk) {
+          if (ch.bufferedAmount > HIGH) await new Promise(r => ch.drain = r);
+          if (ch.readyState !== 'open') return;
+          const part = new Uint8Array(buf, i, Math.min(chunk, buf.byteLength - i));
           ch.send(part);
+          s.at += part.byteLength;
           o.n += part.byteLength;
           moved += part.byteLength;
         }
         dirty.add(o);
       }
-      queue.shift();
+      if (s.at < s.end && o.state === 'sending') o.left.push({ o, at: s.at, end: s.end }); // paused partway
+      if (o.n >= o.size) queue = queue.filter(x => x !== o);
     }
   } catch (e) {
-    log(`Sending ${queue[0]?.path} failed: ${why(e)}`, 'err');
-    if (ch.readyState === 'open') { const o = queue.shift(); o.state = 'error'; dirty.add(o); }
+    log(`Sending ${s?.o.path} failed: ${why(e)}`, 'err');
+    if (ch.readyState === 'open' && s) { queue = queue.filter(x => x !== s.o); s.o.state = 'error'; dirty.add(s.o); }
   } finally {
-    pumping = false;
-    if (ch !== dc) pump(); // reconnected while this loop was winding down
+    ch.busy = false;
   }
 }
 
-function onChunk(buf) {
-  const it = cur;
-  if (!it) return;
+// Segments can arrive in any order. Each keeps its own bytes until the file is complete.
+function onChunk(buf, ch) {
+  const { it, seg } = ch.cur || {};
+  if (it?.state !== 'receiving' || it.segs.get(seg.at) !== seg) return; // cancelled, or the segment was sent again
+  const at = seg.at + seg.n;
+  seg.n += buf.byteLength;
   it.n += buf.byteLength;
   moved += buf.byteLength;
   dirty.add(it);
-  if (it.folder) it.chain = it.chain.then(() => it.w.write(buf));
-  else {
-    it.parts.push(buf);
-    // Fold chunks into a Blob regularly so the browser can page large files to disk.
-    if ((it.pend += buf.byteLength) > 32 << 20) { it.parts = [new Blob(it.parts)]; it.pend = 0; }
-  }
+  if (it.folder) write(it, w => w.write({ type: 'write', position: at, data: buf }));
+  else seg.parts.push(buf);
   if (it.n >= it.size) finish(it);
 }
 
+// After a reconnect: how much of the file arrived from the start with no gap. Anything past a gap is dropped
+// and sent again.
+function kept(it) {
+  let n = 0;
+  for (const s of [...it.segs.values()].sort((a, b) => a.at - b.at)) if (s.at > n) it.segs.delete(s.at); else n = Math.max(n, s.at + s.n);
+  return it.n = n;
+}
+const detach = it => chans().forEach(ch => { if (ch.cur?.it === it) ch.cur = null; });
+
 function finish(it) {
-  cur = null;
+  detach(it);
   send({ t: 'got', id: it.id });
   if (it.folder) {
-    it.chain.then(() => it.w.close()).then(() => it.state = 'done', e => { it.state = 'error'; log(`Writing ${it.path} failed: ${why(e)}`, 'err'); }).then(() => dirty.add(it));
+    write(it).then(() => it.w.close()).then(() => it.state = 'done', e => { it.state = 'error'; log(`Writing ${it.path} failed: ${why(e)}`, 'err'); }).then(() => dirty.add(it));
     return;
   }
-  it.blob = new Blob(it.parts);
-  it.parts = null;
+  it.blob = new Blob([...it.segs.values()].sort((a, b) => a.at - b.at).flatMap(s => s.parts));
+  it.segs = null;
   it.a = el('a', { href: URL.createObjectURL(it.blob), download: it.path.replace(/[/\\]/g, '_'), textContent: 'Save', onclick: savedOnce });
   it.note.after(' ', it.a);
   if (it.auto) it.a.click();
@@ -492,11 +645,23 @@ async function saveZip(grp, got) {
   } catch (e) { show(el('small', { textContent: 'Zip failed: ' + e.message })); log('Zip failed: ' + why(e), 'err'); }
 }
 
-async function openWriter(dir, path) {
-  const segs = path.split(/[/\\]/).filter(s => s && s !== '.' && s !== '..');
+async function openWriter(it) {
+  const segs = it.path.split(/[/\\]/).filter(s => s && s !== '.' && s !== '..');
   const name = segs.pop() || 'file';
+  let dir = it.folder;
   for (const s of segs) dir = await dir.getDirectoryHandle(s, { create: true });
-  return (await dir.getFileHandle(name, { create: true })).createWritable();
+  const fresh = await dir.getFileHandle(name).then(() => false, () => true);
+  const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+  // A cancel removes the file only if this made it. Aborting leaves a file that was already there as it was.
+  if (fresh) it.rm = () => dir.removeEntry(name);
+  return w;
+}
+
+// Writes into a picked folder go one after another, once the file is open. Segments land at their own offsets.
+function write(it, step) {
+  it.chain ||= openWriter(it).then(w => it.w = w);
+  if (step) it.chain = it.chain.then(() => step(it.w));
+  return it.chain;
 }
 
 // ---------- Files in ----------
@@ -509,7 +674,7 @@ function addFiles(list) { // [[File, relativePath]]
     addRow(grp, o);
     return o;
   });
-  if (connected) offer(fresh);
+  if (ready()) offer(fresh);
 }
 
 async function walk(entry, path = '') {
@@ -524,6 +689,21 @@ document.addEventListener('drop', async e => {
   e.preventDefault();
   const entries = [...e.dataTransfer.items].map(i => i.webkitGetAsEntry?.()).filter(Boolean);
   addFiles(entries.length ? (await Promise.all(entries.map(x => walk(x)))).flat() : [...e.dataTransfer.files].map(f => [f, f.name]));
+});
+// Pasting once connected sends what's pasted: files and screenshots go out like dropped ones. Text pasted outside
+// a text field goes into the text box to look over first, since a clipboard can hold something private.
+document.addEventListener('paste', e => {
+  if ($('main').hidden) return;
+  const files = [...e.clipboardData.files], text = e.clipboardData.getData('text/plain');
+  const field = e.target.closest?.('input, textarea, [contenteditable]');
+  if (files.length && !(field && text)) {
+    e.preventDefault();
+    addFiles(files.map(f => [f, f.name]));
+  } else if (text && !field) {
+    e.preventDefault();
+    $('text').value = text;
+    $('text').focus();
+  }
 });
 $('pickFiles').onclick = () => $('files').click();
 $('pickFolder').onclick = () => $('folder').click();
@@ -611,7 +791,7 @@ function view(s, msg) {
     if (getM === 'link' && !matchMedia('(pointer: coarse)').matches) $('paste').focus();
   }
   syncMedia();
-  $('sendText').disabled = s !== 'connected';
+  $('sendText').disabled = !ready();
   say(msg || {
     give: starting ? '' : 'Waiting for the other device to take your reply…', get: starting ? 'Waiting for their reply…' : '',
     connected: 'Connected', handed: 'Code passed to your other WebSend tab. Switch to it; you can close this one.',
@@ -653,7 +833,9 @@ function group(title) {
 function addRow(grp, it) {
   it.note = el('small');
   it.bar = el('progress', { max: 1, value: 0 });
-  const li = el('li', {}, `${it.path} · ${fmt(it.size)} `, it.note, it.bar);
+  it.pause = el('button', { onclick: () => hold(it, !it.held) });
+  it.stop = el('button', { textContent: 'Cancel', onclick: () => cancel(it) });
+  const li = el('li', {}, `${it.path} · ${fmt(it.size)} `, it.note, ' ', it.pause, ' ', it.stop, it.bar);
   grp.ul.append(li);
   grp.items.push(it);
   it.grp = grp;
@@ -703,20 +885,25 @@ async function respond(items, mode) {
   let folder = null;
   if (mode === 'dir') try { folder = await showDirectoryPicker({ mode: 'readwrite' }); } catch { return false; }
   items.forEach(it => {
-    Object.assign(it, { state: mode === 'no' ? 'declined' : 'receiving', folder, auto: mode === 'dl', parts: [], pend: 0 });
+    Object.assign(it, { state: mode === 'no' ? 'declined' : 'receiving', folder, auto: mode === 'dl', segs: new Map() });
     dirty.add(it);
   });
   if (mode === 'no') sendIn({ t: 'decline' }, 'ids', items.map(it => it.id));
-  else sendIn({ t: 'accept' }, 'files', items.map(it => [it.id, 0]));
+  else {
+    sendIn({ t: 'accept' }, 'files', items.map(it => [it.id, 0]));
+    items.filter(it => !it.size).forEach(finish); // an empty file has nothing to wait for
+  }
   return true;
 }
 
-const LABEL = { queued: 'waiting for connection', offered: 'waiting for them to accept', pending: '', declined: 'declined', error: 'failed' };
+const LABEL = { queued: 'waiting for connection', offered: 'waiting for them to accept', pending: '', declined: 'declined', error: 'failed', cancelled: 'cancelled' };
 function paint(it) {
-  const done = it.state === 'done';
+  const done = it.state === 'done', live = LIVE.includes(it.state);
   if (it.save) it.save.hidden = it.state !== 'pending';
+  it.pause.hidden = it.stop.hidden = !live;
+  it.pause.textContent = it.held ? 'Resume' : 'Pause';
   it.bar.value = done ? 1 : it.size ? it.n / it.size : 0;
-  it.note.textContent = done ? (it.up ? 'sent ✓' : 'received ✓') : LABEL[it.state] ?? Math.floor(it.bar.value * 100) + '%';
+  it.note.textContent = done ? (it.up ? 'sent ✓' : 'received ✓') : live && it.held ? 'paused' : LABEL[it.state] ?? Math.floor(it.bar.value * 100) + '%';
 }
 
 function textEntry(dir, v) {
@@ -728,7 +915,8 @@ let lastMoved = 0;
 setInterval(() => {
   dirty.forEach(paint);
   dirty.clear();
-  if (connected) say(stall ? 'Connection interrupted. Trying to reconnect…' : 'Connected' + route + (moved > lastMoved ? ` · ${fmt((moved - lastMoved) * 2)}/s` : ''), !!stall);
+  if (connected) say(stall ? 'Connection interrupted. Trying to reconnect…' : checked && !theyOk ? 'Connected. Waiting for the other device to confirm the number…'
+    : 'Connected' + route + (moved > lastMoved ? ` · ${fmt((moved - lastMoved) * 2)}/s` : ''), !!stall);
   lastMoved = moved;
 }, 500);
 
@@ -759,7 +947,11 @@ $('back').onclick = () => {
   reset();
 };
 $('startOver').onclick = () => reset();
-$('sasYes').onclick = () => { checked = true; view('connected'); };
+$('sasYes').onclick = () => {
+  checked = true;
+  send({ t: 'ok', max: +(pc.localDescription.sdp.match(/a=max-message-size:(\d+)/)?.[1] ?? 65536) }); // RFC 8841's default
+  if (theyOk) bothChecked(); else view('connected');
+};
 $('sasNo').onclick = () => hangup("Disconnected because the numbers didn't match, so another device may have answered your invite. Connect again, ideally side by side.");
 $('hangup').onclick = () => hangup('Disconnected.');
 // Tells the other device first, so it drops at once instead of waiting for the connection to time out.
@@ -792,7 +984,7 @@ $('share').onclick = () => navigator.share({ url: $('link').value }).catch(() =>
 $('textForm').onsubmit = e => {
   e.preventDefault();
   const v = $('text').value;
-  if (!v || !connected) return;
+  if (!v || !ready()) return;
   send({ t: 'text', v });
   textEntry('↑', v);
   $('text').value = '';
