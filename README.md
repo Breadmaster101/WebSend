@@ -23,7 +23,7 @@ If the connection drops, connect again in the same tabs. Unfinished transfers re
 
 ## Host
 
-Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, `app.js`, `sound.js`, `tap.js`, `style.css`, `qrcode.js`, `jsQR.js`, `client-zip.js`. No build step.
+Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, `app.js`, `sound.js`, `tap.js`, `style.css`, `qrcode.js`, `jsQR.js`, `client-zip.js`, plus `LICENSE` and `THIRD-PARTY-NOTICES` so the license texts travel with the code. No build step.
 
 ## Security
 
@@ -58,4 +58,5 @@ Common findings: no public address (the network blocks UDP to STUN), a different
 
 `qrcode.js` is [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 1.4.4 by Kazuhiko Arase (MIT).
 `jsQR.js` is [jsQR](https://github.com/cozmo/jsQR) 1.4.0 by Cosmo Wolfe (Apache-2.0), its `dist/jsQR.js` build.
+All three are unmodified; their full license texts are in [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES).
 `client-zip.js` is [client-zip](https://github.com/Touffy/client-zip) 2.5.1 by David Junger (MIT), its `worker.js` build.
