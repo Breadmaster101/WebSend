@@ -17,7 +17,7 @@ const fmt = b => { let i = 0; while (b >= 1024 && i < 4) { b /= 1024; i++; } ret
 const rid = () => Math.random().toString(36).slice(2);
 
 const out = new Map(), inc = new Map(), groups = new Map(), dirty = new Set();
-let pc, dc, myCode, lastOffer, timer, wake, screen, cur = null, connected = false, queue = [], pumping = false, drain = () => {}, moved = 0, route = '';
+let pc, dc, myCode, lastOffer, timer, stall, wake, screen, cur = null, connected = false, queue = [], pumping = false, drain = () => {}, moved = 0, route = '';
 // role: 'starting' | 'joining'. replying: the joiner has taken in the invite. toReply: the starter moved on to getting
 // the reply. sendM / getM: how this device gives its code and takes in the other's ('qr' | 'link' | 'sound').
 // chirping: the user tapped Play sound. checked: the user confirmed both screens show the same number.
@@ -133,7 +133,15 @@ function newPeer() {
   p.onicecandidate = ({ candidate: c }) => c?.candidate && log('Found address: ' + (c.type ? `${c.type} ${c.protocol} ${c.address}:${c.port}` : c.candidate));
   p.onicecandidateerror = e => log(`STUN ${e.url} error ${e.errorCode} on ${e.address ?? '?'}: ${e.errorText} (harmless if a public address is found)`);
   p.onicegatheringstatechange = () => log('Address search: ' + p.iceGatheringState);
-  p.oniceconnectionstatechange = () => { const s = p.iceConnectionState; log('Connectivity checks: ' + s, s === 'failed' ? 'err' : s === 'disconnected' ? 'warn' : ''); };
+  p.oniceconnectionstatechange = () => {
+    const s = p.iceConnectionState;
+    log('Connectivity checks: ' + s, s === 'failed' ? 'err' : s === 'disconnected' ? 'warn' : '');
+    if (p !== pc || !connected) return;
+    // A connection that stops answering takes the browser about half a minute to call failed. Say so at once,
+    // and count it as dropped if it hasn't come back within a few seconds.
+    clearTimeout(stall);
+    stall = s === 'disconnected' && setTimeout(() => p === pc && dropped(), 5000);
+  };
   p.onconnectionstatechange = () => {
     if (p !== pc) return;
     const s = p.connectionState;
@@ -262,6 +270,8 @@ function dropped(msg = 'Disconnected. Connect again to carry on; unfinished tran
   if (!connected) return;
   log(`Disconnected (connection ${pc?.connectionState})`, msg === 'Disconnected.' ? '' : 'warn');
   connected = false;
+  clearTimeout(stall);
+  stall = null;
   route = '';
   cur = null;
   queue = [];
@@ -332,6 +342,7 @@ const on = {
     if (it.n >= it.size) finish(it);
   },
   text({ v }) { textEntry('↓', String(v)); },
+  bye() { dropped('The other device disconnected.'); },
 };
 
 function onMessage(d) {
@@ -527,7 +538,7 @@ function view(s, msg) {
     stepper(+(starting ? toReply : replying));
     $('got').hidden = !replying;
     for (const id of ['ask', 'give', 'get']) $(id).hidden = s !== id;
-    $('back').textContent = s === 'get' || (s === 'ask' && !replying) ? 'Back' : 'Start over';
+    $('back').hidden = s === 'ask' && replying; // the invite is already in, so there's nothing to go back to
   }
   if (s === 'ask') {
     const [title, hint] = starting && toReply ? ['How is the reply coming back?', 'Once it has your invite, the other device asks how to send its reply. Pick the same method here.']
@@ -673,7 +684,7 @@ let lastMoved = 0;
 setInterval(() => {
   dirty.forEach(paint);
   dirty.clear();
-  if (connected) say('Connected' + route + (moved > lastMoved ? ` · ${fmt((moved - lastMoved) * 2)}/s` : ''));
+  if (connected) say(stall ? 'Connection interrupted. Trying to reconnect…' : 'Connected' + route + (moved > lastMoved ? ` · ${fmt((moved - lastMoved) * 2)}/s` : ''), !!stall);
   lastMoved = moved;
 }, 500);
 
@@ -685,19 +696,22 @@ $('askGo').onclick = () => {
   if ((role === 'starting' && !toReply) || replying) { sendM = m; view('give'); } else { getM = m; view('get'); }
 };
 document.addEventListener('change', e => { if (e.target.type === 'radio') e.target.closest('fieldset').nextElementSibling.hidden = true; });
-$('giveSwitch').onclick = () => view('ask');
 $('giveNext').onclick = () => { toReply = true; view('ask'); };
 $('chirp').onclick = () => { chirping = !chirping; showCode(); };
-// Back goes one screen back (to the question, or from the reply question to the invite); from a code it starts over.
+// Back goes one screen back: a code or scan goes back to its question, the reply question to the invite,
+// and the first question to the start screen.
 $('back').onclick = () => {
-  if (screen === 'get') return view('ask');
-  if (screen === 'ask' && toReply) { toReply = false; return view('give'); }
+  if (screen !== 'ask') return view('ask');
+  if (toReply) { toReply = false; return view('give'); }
   reset();
 };
+$('startOver').onclick = () => reset();
 $('sasYes').onclick = () => { checked = true; view('connected'); };
 $('sasNo').onclick = () => hangup("Disconnected because the numbers didn't match, so another device may have answered your invite. Connect again, ideally side by side.");
 $('hangup').onclick = () => hangup('Disconnected.');
-function hangup(msg) { const p = pc; dropped(msg); p?.close(); clearFiles(); }
+// Tells the other device first, so it drops at once instead of waiting for the connection to time out.
+function hangup(msg) { const p = pc; send({ t: 'bye' }); dropped(msg); p?.close(); clearFiles(); }
+addEventListener('pagehide', () => send({ t: 'bye' }));
 
 // A deliberate disconnect forgets every transfer, unlike a dropped connection, which keeps them to resume.
 function clearFiles() {
