@@ -581,7 +581,7 @@ function showCode() {
   $('making').textContent = `Making your ${what}…`;
   $('making').hidden = !!myCode;
   $('code').hidden = !myCode;
-  $('chirpMsg').textContent = chirping ? `Playing your ${what}. It repeats until you stop it, so keep the devices close.`
+  $('chirpMsg').textContent = chirping ? `Playing your ${what}. It repeats until you stop it, so keep the devices close. Can't hear it? Check the media volume, and that the phone isn't on silent.`
     : `This plays your ${what} out loud as chirps. Turn the volume up and keep the devices close.`;
   $('chirp').textContent = chirping ? 'Stop sound' : 'Play sound';
   syncMedia();
@@ -697,7 +697,16 @@ $('askGo').onclick = () => {
 };
 document.addEventListener('change', e => { if (e.target.type === 'radio') e.target.closest('fieldset').nextElementSibling.hidden = true; });
 $('giveNext').onclick = () => { toReply = true; view('ask'); };
-$('chirp').onclick = () => { chirping = !chirping; showCode(); };
+// Resumed during the tap too: some mobile browsers start audio suspended even when it's made in a tap.
+$('chirp').onclick = async () => {
+  chirping = !chirping;
+  showCode();
+  if (!chirping) return;
+  const ctx = audio;
+  await ctx.resume().catch(() => {});
+  log(`Playing the code by sound: audio ${ctx.state} at ${ctx.sampleRate} Hz` + (navigator.audioSession ? `, session ${navigator.audioSession.type}` : ''), ctx.state === 'running' ? '' : 'warn');
+  if (ctx === audio && ctx.state !== 'running') $('chirpMsg').textContent = "The browser didn't let the sound play. Tap Stop sound, then Play sound again.";
+};
 // Back goes one screen back: a code or scan goes back to its question, the reply question to the invite,
 // and the first question to the start screen.
 $('back').onclick = () => {
@@ -758,6 +767,9 @@ let audio, ear = null, cam = null, rx, osc = [], sending = null, lastHeard = nul
 function syncMedia() {
   const chirp = chirping && sendM === 'sound' && screen === 'give';
   const hear = screen === 'get' && getM === 'sound';
+  // iPhones mute web audio with the silent switch unless the page says it's playing media (Safari 17+).
+  // Listening needs the recording session instead, which iOS also plays through.
+  if (navigator.audioSession) navigator.audioSession.type = hear ? 'play-and-record' : chirp ? 'playback' : 'auto';
   if ((chirp || hear) && !audio) audio = new AudioContext(); // made during the tap on Play sound or Continue, so the browser lets it play
   if (chirp && myCode) { if (sending?.code !== myCode) broadcast(myCode); } else stopSending();
   if (hear) { if (!ear) listen(); } else stopListening();
