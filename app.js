@@ -18,9 +18,10 @@ const rid = () => Math.random().toString(36).slice(2);
 
 const out = new Map(), inc = new Map(), groups = new Map(), dirty = new Set();
 let pc, dc, myCode, lastOffer, timer, wake, screen, cur = null, connected = false, queue = [], pumping = false, drain = () => {}, moved = 0, route = '';
-// role: 'starting' | 'joining'. replying: the joiner has taken in the invite. sendM / getM: how this device gives its code
-// and takes in the other's ('qr' | 'link' | 'sound'). checked: the user confirmed both screens show the same number.
-let role = null, replying = false, sendM = null, getM = null, checked = false;
+// role: 'starting' | 'joining'. replying: the joiner has taken in the invite. toReply: the starter moved on to getting
+// the reply. sendM / getM: how this device gives its code and takes in the other's ('qr' | 'link' | 'sound').
+// chirping: the user tapped Play sound. checked: the user confirmed both screens show the same number.
+let role = null, replying = false, toReply = false, sendM = null, getM = null, chirping = false, checked = false;
 
 // ---------- Connection log ----------
 // Shown on the page (not just the console) so a failed connection can be diagnosed and the log copied from any device.
@@ -201,6 +202,7 @@ async function useCode(text) {
       decode(code);
       role = 'joining';
       replying = true;
+      toReply = false;
       myCode = sendM = null;
       view('ask');
       if (await makeAnswer(code)) showCode();
@@ -220,7 +222,7 @@ function reset(msg) {
   clearTimeout(timer);
   if (!connected) { pc?.close(); pc = dc = myCode = null; }
   role = sendM = getM = lastHeard = null;
-  replying = false;
+  replying = toReply = false;
   view('start', msg);
 }
 
@@ -484,9 +486,10 @@ function say(msg, alert = false) {
 // The connection screens. After start or join, each device answers one question per direction: how its code
 // goes to the other device, and how it takes in the other's. The three methods are listed alike and none is
 // picked in advance, so the invite and the reply can travel different ways.
-//   ask:  the question that fits (send the invite / get the invite / send the reply)
-//   give: this device's code in the method picked; the starter also asks how the reply comes back
+//   ask:  the question that fits (send the invite / get the invite / send the reply / get the reply)
+//   give: this device's code in the method picked
 //   get:  scan, paste or listen for the other device's code
+// Starter: ask → give → ask → get. Joiner: ask → get → ask → give.
 const STEPS = ['Invite', 'Reply', 'Check number', 'Send'];
 const METHODS = { qr: 'QR code', link: 'Link', sound: 'Sound' };
 const ABOUT = {
@@ -500,7 +503,7 @@ const tip = (id, text) => $(id).replaceChildren(el('b', { textContent: 'On the o
 
 // Fresh radios every time, so nothing is picked until the user picks.
 function methods(set, kind) {
-  set.replaceChildren(set.querySelector('legend'), ...Object.keys(METHODS).map(m => el('label', {},
+  set.replaceChildren(...Object.keys(METHODS).map(m => el('label', {},
     el('input', { type: 'radio', name: set.id, value: m }), el('b', { textContent: METHODS[m] }), el('span', { textContent: ABOUT[kind][m] }))));
   set.nextElementSibling.hidden = true;
 }
@@ -511,6 +514,7 @@ function picked(set, msg) {
 }
 
 function view(s, msg) {
+  if (s !== screen) chirping = false; // sound only ever starts from the Play sound button
   screen = s;
   const flow = ['ask', 'give', 'get'].includes(s), starting = role === 'starting';
   $('start').hidden = s !== 'start';
@@ -520,24 +524,28 @@ function view(s, msg) {
   $('main').hidden = s !== 'connected' || !checked;
   if (flow) {
     $('role').textContent = `You're ${role} the connection.`;
-    stepper(starting ? +(s === 'get') : +replying);
+    stepper(+(starting ? toReply : replying));
     $('got').hidden = !replying;
     for (const id of ['ask', 'give', 'get']) $(id).hidden = s !== id;
     $('back').textContent = s === 'get' || (s === 'ask' && !replying) ? 'Back' : 'Start over';
   }
   if (s === 'ask') {
-    $('askTitle').textContent = starting ? 'How do you want to send your invite?' : replying ? 'How do you want to send your reply?' : 'How are you getting the invite?';
-    $('askHint').textContent = replying ? "Any method works, even a different one from the invite's." : starting ? '' : 'Pick the method the other device is using to send it.';
-    methods($('askSet'), starting || replying ? 'send' : 'get');
+    const [title, hint] = starting && toReply ? ['How is the reply coming back?', 'Once it has your invite, the other device asks how to send its reply. Pick the same method here.']
+      : starting ? ['How do you want to send your invite?', '']
+      : replying ? ['How do you want to send your reply?', "Any method works, even a different one from the invite's."]
+      : ['How are you getting the invite?', 'Pick the method the other device is using to send it.'];
+    $('askTitle').textContent = title;
+    $('askHint').textContent = hint;
+    $('askHint').hidden = !hint;
+    methods($('askSet'), (starting && !toReply) || replying ? 'send' : 'get');
   }
   if (s === 'give') {
-    $('giveTitle').textContent = starting ? '1. Send your invite' : 'Send your reply';
+    $('giveTitle').textContent = starting ? 'Send your invite' : 'Send your reply';
     document.querySelectorAll('[data-g]').forEach(p => p.hidden = p.dataset.g !== sendM);
     tip('giveTip', starting
       ? `tap Join a connection and pick ${METHODS[sendM]}.` + { qr: ' Its camera app works too.', link: ' Or just open the link there.', sound: '' }[sendM]
-      : `under Get its reply, pick ${METHODS[sendM]}. You're connected as soon as it takes in your reply.`);
-    $('replyStep').hidden = !starting;
-    if (starting) methods($('replySet'), 'get');
+      : `when it asks how the reply is coming back, pick ${METHODS[sendM]}. You're connected as soon as it takes in your reply.`);
+    $('giveNext').hidden = !starting;
     showCode();
   }
   if (s === 'get') {
@@ -562,7 +570,9 @@ function showCode() {
   $('making').textContent = `Making your ${what}…`;
   $('making').hidden = !!myCode;
   $('code').hidden = !myCode;
-  $('chirpWhat').textContent = what;
+  $('chirpMsg').textContent = chirping ? `Playing your ${what}. It repeats until you stop it, so keep the devices close.`
+    : `This plays your ${what} out loud as chirps. Turn the volume up and keep the devices close.`;
+  $('chirp').textContent = chirping ? 'Stop sound' : 'Play sound';
   syncMedia();
   if (!myCode || myCode === shown) return;
   shown = myCode;
@@ -672,16 +682,18 @@ $('goJoin').onclick = () => { role = 'joining'; view('ask'); };
 $('askGo').onclick = () => {
   const m = picked($('askSet'), 'Pick a method first.');
   if (!m) return;
-  if (role === 'starting' || replying) { sendM = m; view('give'); } else { getM = m; view('get'); }
-};
-$('replyGo').onclick = () => {
-  const m = picked($('replySet'), 'Pick how the reply is coming back first.');
-  if (m) { getM = m; view('get'); }
+  if ((role === 'starting' && !toReply) || replying) { sendM = m; view('give'); } else { getM = m; view('get'); }
 };
 document.addEventListener('change', e => { if (e.target.type === 'radio') e.target.closest('fieldset').nextElementSibling.hidden = true; });
 $('giveSwitch').onclick = () => view('ask');
-// Back from scanning, pasting or listening returns to the question or code before it; elsewhere it starts over.
-$('back').onclick = () => screen === 'get' ? view(role === 'starting' ? 'give' : 'ask') : reset();
+$('giveNext').onclick = () => { toReply = true; view('ask'); };
+$('chirp').onclick = () => { chirping = !chirping; showCode(); };
+// Back goes one screen back (to the question, or from the reply question to the invite); from a code it starts over.
+$('back').onclick = () => {
+  if (screen === 'get') return view('ask');
+  if (screen === 'ask' && toReply) { toReply = false; return view('give'); }
+  reset();
+};
 $('sasYes').onclick = () => { checked = true; view('connected'); };
 $('sasNo').onclick = () => hangup("Disconnected because the numbers didn't match, so another device may have answered your invite. Connect again, ideally side by side.");
 $('hangup').onclick = () => hangup('Disconnected.');
@@ -723,16 +735,16 @@ addEventListener('beforeunload', e => {
 });
 
 // ---------- Sound and camera ----------
-// Each runs only while the screen needs it: the speaker while this device's code is being sent by sound,
+// Each runs only while the screen needs it: the speaker after the user taps Play sound on a code sent by sound,
 // the microphone on a "listen" screen, the camera on a "scan" screen. Playing never needs the microphone.
 // sound.js turns codes into tones. Anyone in earshot can hear them (harmless) or answer first; the number check catches that.
 const wait = ms => new Promise(r => setTimeout(r, ms));
 let audio, ear = null, cam = null, rx, osc = [], sending = null, lastHeard = null;
 
 function syncMedia() {
-  const chirp = sendM === 'sound' && (screen === 'give' || (screen === 'get' && role === 'starting')); // the invite keeps playing while the starter waits
+  const chirp = chirping && sendM === 'sound' && screen === 'give';
   const hear = screen === 'get' && getM === 'sound';
-  if ((chirp || hear) && !audio) audio = new AudioContext(); // first made during the tap that picked sound, so the browser lets it play
+  if ((chirp || hear) && !audio) audio = new AudioContext(); // made during the tap on Play sound or Continue, so the browser lets it play
   if (chirp && myCode) { if (sending?.code !== myCode) broadcast(myCode); } else stopSending();
   if (hear) { if (!ear) listen(); } else stopListening();
   if (screen === 'get' && getM === 'qr') { if (!cam) scan(); } else stopScanning();

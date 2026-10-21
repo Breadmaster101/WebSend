@@ -42,7 +42,7 @@
   <div id="ask">
     <h2 id="askTitle"></h2>
     <p id="askHint"></p>
-    <fieldset id="askSet"><legend>Pick one</legend></fieldset>
+    <fieldset id="askSet" aria-labelledby="askTitle"></fieldset>
     <p id="askErr" class="alert" role="alert" hidden></p>
     <button id="askGo">Continue</button>
   </div>
@@ -58,17 +58,14 @@
         <button id="copyCode">Copy code</button>
         <button id="share">Share…</button>
       </div>
-      <p data-g="sound">Chirping your <span id="chirpWhat"></span>. It repeats until the other device hears it, so keep the devices close with the volume up.</p>
+      <div data-g="sound">
+        <p id="chirpMsg" aria-live="polite"></p>
+        <button id="chirp"></button>
+      </div>
     </div>
     <p id="giveTip"></p>
+    <button id="giveNext">Next: get its reply</button>
     <button id="giveSwitch">Use a different method</button>
-    <div id="replyStep">
-      <h2>2. Get its reply</h2>
-      <p>Once it has your invite, the other device asks how to send its reply. Pick the same method here.</p>
-      <fieldset id="replySet"><legend>How is the reply coming back?</legend></fieldset>
-      <p id="replyErr" class="alert" role="alert" hidden></p>
-      <button id="replyGo">Continue</button>
-    </div>
   </div>
 
   <div id="get">

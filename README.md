@@ -7,13 +7,13 @@ Serverless peer-to-peer file and text sharing in the browser. Files go directly 
 Open WebSend on both devices. On one, tap **Start a connection**; on the other, **Join a connection**. The two devices then swap two codes:
 
 1. **Invite**: the starting device picks how to send its invite, and the joining device picks the same method to take it in.
-2. **Reply**: the joining device picks how to send its reply, and the starting device picks the same method to take it in.
+2. **Reply**: the joining device picks how to send its reply. On the starting device, tap **Next: get its reply** and pick the same method to take it in.
 
 Each time, the choice is one of:
 
 - **QR code**: one device shows a code and the other scans it in the page (the phone's camera app works too).
 - **Link**: copy, share or send the link through any app, then paste it on the other device or just open it there.
-- **Sound**: one device chirps the code and the other listens. Chirping only needs a speaker; listening needs the microphone.
+- **Sound**: one device chirps the code and the other listens. Nothing plays until you tap **Play sound**, and it repeats until you tap **Stop sound**. Chirping only needs a speaker; listening needs the microphone.
 
 The invite and the reply can use different methods. For example, send a PC's invite to your phone as a link, then let the phone chirp its reply back. Sound works best with the devices close together and the volume up.
 
