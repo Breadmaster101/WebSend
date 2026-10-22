@@ -1,10 +1,10 @@
 // ---------- Peer connection ----------
-import { ICE, CHUNK, BIG, LOW, LANES, PROTO } from './config.js';
+import { ICE, CHUNK, BIG, LOW, PROTO } from './config.js';
 import { why } from './util.js';
 import { log, logCode, samplePairs, report, pairs } from './log.js';
 import { encode, decode } from './code.js';
 import { dc, setDc, on, send, sendIn } from './protocol.js';
-import { lane, closeLanes } from './lanes.js';
+import { grow, closeLanes } from './lanes.js';
 import { startSas } from './sas.js';
 import { out, dirty, queue, offer, onChunk } from './transfer.js';
 import { view, reset } from './connect.js';
@@ -158,7 +158,7 @@ function bothChecked() {
   const old = [...out.values()];
   sendIn({ t: 'cancel', up: true }, 'ids', old.filter(o => o.state === 'cancelled').map(o => o.id)); // in case it missed them
   offer(old.filter(o => !['done', 'declined', 'cancelled', 'missing'].includes(o.state)));
-  if (pc.localDescription.type === 'offer') for (let i = 1; i < LANES; i++) lane(i);
+  if (pc.localDescription.type === 'offer') grow();
 }
 
 // "direct" = device to device on the local network. "via router" = each side reached the other's public address,

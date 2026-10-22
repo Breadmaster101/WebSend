@@ -23,9 +23,11 @@ export const owned = new Set([TAB]); // folders this tab holds
 const CLOSED = 'websend-closed:'; // + a folder whose tab closed normally
 let worker, calls = 0;
 const waits = new Map();
+// The page's CSP enforces Trusted Types, so script URLs need a policy. This one only ever gives out the worker's.
+const STORE = self.trustedTypes ? trustedTypes.createPolicy('websend', { createScriptURL: () => 'store.js' }).createScriptURL('store.js') : 'store.js';
 export function rpc(op, a, xfer = []) {
   if (!worker) {
-    worker = new Worker('store.js');
+    worker = new Worker(STORE);
     worker.onmessage = ({ data: { n, v, e } }) => { const [r, j] = waits.get(n); waits.delete(n); e ? j(new Error(e)) : r(v); };
   }
   return new Promise((r, j) => { waits.set(++calls, [r, j]); worker.postMessage({ n: calls, op, ...a }, xfer); });

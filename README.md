@@ -23,20 +23,21 @@ If the connection drops, connect again. Unfinished transfers resume where they s
 
 ## Host
 
-Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, the `app/` folder, `sound.js`, `tap.js`, `store.js`, `style.css`, `qrcode.js`, `jsQR.js`, `client-zip.js`, `idb-keyval.js`, plus `LICENSE` and `THIRD-PARTY-NOTICES` so the license texts travel with the code. No build step.
+Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `index.html`, the `app/` folder, `frame.js`, `sound.js`, `tap.js`, `store.js`, `style.css`, `qrcode.js`, `jsQR.js`, `client-zip.js`, `idb-keyval.js`, plus `LICENSE` and `THIRD-PARTY-NOTICES` so the license texts travel with the code. No build step.
 
 ## Security
 
 - **Encrypted end to end** by WebRTC (DTLS). The connection code carries the peer's certificate fingerprint, so only the device holding the matching key can connect. Codes swapped in person (QR) can't be intercepted. Codes sent through a messenger are as trustworthy as that messenger.
 - **Matching numbers prove a direct connection.** After connecting, both screens show a number derived from both devices' keys. If someone substituted their own code (by answering a sound code first, or tampering with a message), the numbers differ. Each device also mixes a random value into the number, sending a hash of it before either value is revealed, so a forger can't try key after key until the numbers happen to agree. A guess has a 1 in a million chance. Nothing is offered, sent or accepted until both people have confirmed, including transfers resuming after a reconnect.
-- **Extra connections are as safe as the first.** After the check, the devices open two more connections for speed (see [Speed](#speed)). Their codes, with their key fingerprints, travel over the checked connection, never through a server.
+- **Extra connections are as safe as the first.** After the check, the devices may open up to two more connections for speed (see [Speed](#speed)). Their codes, with their key fingerprints, travel over the checked connection, never through a server.
 - **Sound codes can be heard by anyone nearby.** Overhearing one doesn't let anyone decrypt anything, but someone could reply first. The matching number catches that.
 - **Nothing passes through a server.** Codes are in the URL fragment (`#…`), which browsers never send to the web host, and the page clears it from the address bar on load.
 - **Camera and microphone stay on the device.** The camera runs only while scanning and the microphone only while listening. Frames and audio are decoded in the page and never sent anywhere.
 - **Receiver must accept** every batch of files. Received names are only ever shown as text.
 - **Every 4 MB is checked.** The sender sends the SHA-256 of each segment after its bytes, and the receiver stores a segment only once it matches; a damaged one is sent again.
-- **Strict Content-Security-Policy:** only the page's own scripts run, and there are no third-party requests.
-- **One third party, optional:** Google's public STUN servers tell each device its public address so devices on different networks can connect. Two are asked so the connection log can spot symmetric NAT. They see IP addresses only, never data. The joining device also asks them as soon as you tap **Join a connection**, to check its network, and each lane asks them again. Set `ICE = []` in `app/config.js` for same-network-only with zero third parties.
+- **Strict Content-Security-Policy:** only the page's own scripts run, and there are no third-party requests. Trusted Types is enforced too, so no code can turn a string into HTML or a script.
+- **Won't run inside another site.** A site that framed WebSend could hand it the site's own invite and lay fake buttons over the real ones. The usual defence is a `frame-ancestors` header, which static hosts like GitHub Pages can't send, so `frame.js` checks before anything else loads and shows only a link to open WebSend in its own tab. If your host can send headers, add `Content-Security-Policy: frame-ancestors 'none'` as well.
+- **One third party, optional:** Google's public STUN servers tell each device its public address so devices on different networks can connect. Two are asked so the connection log can spot symmetric NAT. They see IP addresses only, never data. The joining device also asks them as soon as you tap **Join a connection**, to check its network, and each lane that opens asks them again. Set `ICE = []` in `app/config.js` for same-network-only with zero third parties.
 
 ## Sound
 
@@ -57,7 +58,7 @@ So a normal close leaves nothing on disk, except whatever the browser cut short,
 
 ## Speed
 
-A single WebRTC connection slows right down whenever a packet is lost, so over Wi-Fi or the internet it uses only part of the link. WebSend sends over three connections side by side ("lanes"): files are cut into 4 MB segments and each lane takes the next one when it's free, so one big file uses all three and small files go out together. Messages are 256 KB when both browsers take them (64 KB otherwise). If a lane drops, the receiver says what it already has and the rest goes over the others.
+A single WebRTC connection slows right down whenever a packet is lost, so over Wi-Fi or the internet it uses only part of the link. WebSend can send over up to three connections side by side ("lanes"): files are cut into 4 MB segments and each lane takes the next one when it's free, so one big file uses them all and small files go out together. Lanes open only when they help: while files are moving, the starting device measures the speed, opens a lane and measures again, and stops at the first lane that doesn't add at least 15%. So a fast, clean link (most home networks) or a small transfer stays on one or two connections, and the connection log shows each decision. Messages are 256 KB when both browsers take them (64 KB otherwise). If a lane drops, the receiver says what it already has and the rest goes over the others.
 
 Measured between two Chrome instances on one PC, sending 64–128 MB, old vs new:
 
