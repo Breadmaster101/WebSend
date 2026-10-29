@@ -1,5 +1,5 @@
 WebSend includes the third-party software below, each unmodified and under its own license.
-WebSend itself is licensed under the GNU General Public License v3.0 (see LICENSE).
+WebSend itself is licensed under the MIT License (see LICENSE).
 
 ================================================================================
 qrcode.js: qrcode-generator 1.4.4 by Kazuhiko Arase
