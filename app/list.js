@@ -1,6 +1,7 @@
 // ---------- Transfer list ----------
 // The files and text sent and received, as rows on the page, and the ways to add files to send.
 import { $, el, fmt, rid } from './util.js';
+import { log } from './log.js';
 import { on, send, sendIn } from './protocol.js';
 import { connected, checked, theyOk, stall, route, ready } from './peer.js';
 import { out, inc, dirty, moved, LIVE, offer, hold, cancel } from './transfer.js';
@@ -71,13 +72,11 @@ async function respond(items, mode) {
   let folder = null;
   if (mode === 'dir') try { folder = await showDirectoryPicker({ mode: 'readwrite' }); } catch { return false; }
   const to = folder ? 'folder' : await disk ? 'disk' : 'mem';
+  // The estimate is only a hint: some browsers report too little (even 0 B) to hide how much disk there is.
+  // So a low one is just logged, and if storage really runs out the write fails and says so (see transfer.js).
   if (to === 'disk' && mode !== 'no') {
     const need = items.reduce((t, it) => t + it.size, 0), { quota, usage } = await navigator.storage.estimate().catch(() => ({}));
-    if (need > quota - usage) {
-      say(`Not enough space: these need ${fmt(need)} but the browser can store ${fmt(Math.max(quota - usage, 0))} more.` +
-        (window.showDirectoryPicker ? ' Save to a folder instead, or pick fewer files.' : ' Free up space or pick fewer files.'), true);
-      return false;
-    }
+    if (need > quota - usage) log(`Storage: the browser estimates room for ${fmt(Math.max(quota - usage, 0))} but these need ${fmt(need)}; trying anyway`, 'warn');
   }
   items.forEach(it => {
     Object.assign(it, { state: mode === 'no' ? 'declined' : 'receiving', folder, to, dir: TAB, name: rid(), auto: mode === 'dl', segs: new Map(), v: 0, bad: 0 });

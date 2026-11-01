@@ -45,7 +45,7 @@ Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `in
 
 ## Storage
 
-Received files are written to the browser's private storage (the origin private file system) as they arrive, so a big file never has to fit in memory. `store.js` does the writing in a worker, and a small IndexedDB note records how much of each download is stored, which is what lets a download resume after a crash. Before accepting, the receiver checks the browser has room; if not, it says so (and suggests **Save to folder…** where available).
+Received files are written to the browser's private storage (the origin private file system) as they arrive, so a big file never has to fit in memory. `store.js` does the writing in a worker, and a small IndexedDB note records how much of each download is stored, which is what lets a download resume after a crash. Browsers' own estimates of free space aren't reliable (some report 0 B), so the receiver doesn't refuse on them; if storage really fills up, the download stops and says so (and suggests **Save to folder…** where available).
 
 A website can't run while it's closed, so WebSend keeps that storage short-lived instead:
 

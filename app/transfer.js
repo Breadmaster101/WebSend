@@ -116,7 +116,10 @@ Object.assign(on, {
     const bytes = await new Blob(seg.parts).arrayBuffer();
     seg.parts = null;
     if (seg.at + seg.n > it.size || b64(await sha(bytes)) !== h) return redo(it, seg);
-    try { await keep(it, seg, bytes); } catch (e) { return fault(it, `Saving ${it.path} failed: ${why(e)}`); }
+    try { await keep(it, seg, bytes); } catch (e) {
+      return fault(it, /QuotaExceeded/.test(why(e)) ? `Saving ${it.path} failed: the browser's storage is full.` +
+        (window.showDirectoryPicker ? ' Save to a folder instead, or pick fewer files.' : ' Free up space or pick fewer files.') : `Saving ${it.path} failed: ${why(e)}`);
+    }
     if (it.state !== 'receiving' || it.segs.get(seg.at) !== seg) return; // cancelled, or dropped by a reconnect
     seg.ok = true;
     it.v += seg.n;
