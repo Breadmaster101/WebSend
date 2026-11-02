@@ -8,7 +8,7 @@ import { chunk } from './peer.js';
 import { lanes } from './lanes.js';
 import { keep, finish, zipReady } from './save.js';
 import { rpc } from './storage.js';
-import { askAccept } from './list.js';
+import { askAccept, raise } from './list.js';
 
 // Files going out and coming in by id, and those whose row needs repainting.
 export const out = new Map(), inc = new Map(), dirty = new Set();
@@ -16,9 +16,16 @@ export const queue = []; // files being sent, in turn
 export const unqueue = o => { const i = queue.indexOf(o); if (i >= 0) queue.splice(i, 1); };
 export let moved = 0; // bytes sent and received so far, for the speed
 
+// Files keep the batch they were first offered in (g), so an offer made again after a reconnect lands them in the
+// same group on the other device.
 export function offer(list) {
-  list.forEach(o => { o.state = 'offered'; dirty.add(o); });
-  sendIn({ t: 'offer', g: rid() }, 'files', list.map(({ id, path, size, held }) => ({ id, path, size, held: !!held })));
+  const gs = new Map();
+  for (const o of list) {
+    o.state = 'offered';
+    dirty.add(o);
+    gs.set(o.g ||= rid(), [...gs.get(o.g) || [], o]);
+  }
+  gs.forEach((os, g) => sendIn({ t: 'offer', g }, 'files', os.map(({ id, path, size, held }) => ({ id, path, size, held: !!held }))));
 }
 
 // Pause, resume or cancel a file from either end. The other device mirrors it; only the sender's pump acts on a pause.
@@ -51,7 +58,7 @@ Object.assign(on, {
       const it = inc.get(f.id);
       if (!it) {
         if (!Number.isSafeInteger(f.size) || f.size < 0) continue;
-        const n = { id: String(f.id), path: String(f.path), size: f.size, n: 0, state: 'pending', held: !!f.held };
+        const n = { id: String(f.id), g: String(g), path: String(f.path), size: f.size, n: 0, state: 'pending', held: !!f.held };
         inc.set(n.id, n);
         fresh.push(n);
       } else if (it.state === 'receiving') {
@@ -59,6 +66,7 @@ Object.assign(on, {
         if (f.held && !it.held) { it.held = true; dirty.add(it); }
         detach(it); // bytes still on the way from before belong to segments that will be sent again
         resume.push([it.id, kept(it), !!it.held]);
+        raise(it.grp);
       } else if (it.state === 'done' || it.state === 'error') send({ t: 'got', id: it.id });
       else if (it.state === 'declined') send({ t: 'decline', ids: [it.id] });
       else if (it.state === 'cancelled') send({ t: 'cancel', ids: [it.id], up: false });

@@ -42,9 +42,9 @@ export function remember(it) {
   const live = it.up ? ['queued', 'offered', 'sending', 'missing'].includes(it.state) : it.state === 'receiving' && it.to === 'disk';
   if (!db || !live) return forget(it);
   it.rec = true;
-  const { dir, id, path, size } = it;
-  idbKeyval.set(key(it), it.up ? { dir, id, path, size, up: true, mod: it.mod, t: Date.now() }
-    : { dir, id, path, size, name: it.name, auto: it.auto, k: prefix(it), t: Date.now() }, db).catch(() => {});
+  const { dir, id, g, path, size } = it;
+  idbKeyval.set(key(it), it.up ? { dir, id, g, path, size, up: true, mod: it.mod, t: Date.now() }
+    : { dir, id, g, path, size, name: it.name, auto: it.auto, k: prefix(it), t: Date.now() }, db).catch(() => {});
 }
 export function forget(it) {
   if (it.rec) idbKeyval.del(key(it), db).catch(() => {});
@@ -89,10 +89,10 @@ function restore(recs) {
     const grp = group('↑ Unfinished: add these files again to carry on');
     outs.forEach(o => { out.set(o.id, o); addRow(grp, o); });
   }
-  if (ins.length) {
-    ins.forEach(it => inc.set(it.id, it));
-    askAccept('before', ins, '↓ Unfinished: connect to the same device again to carry on');
-  }
+  // Downloads go back into their own batch, which moves to the top once the other device offers them again.
+  const gs = new Map();
+  for (const it of ins) { inc.set(it.id, it); gs.set(it.g ??= 'before', [...gs.get(it.g) || [], it]); }
+  gs.forEach((its, g) => askAccept(g, its, '↓ Incoming', true));
 }
 export const disk = sweep().catch(e => (log('Storage: ' + why(e), 'warn'), false));
 

@@ -13,7 +13,18 @@ const groups = new Map();
 export function group(title) {
   const head = el('span'), ul = el('ul'), li = el('li', {}, head, ul);
   $('log').prepend(li);
-  return { title, head, ul, items: [], total: 0 };
+  return { title, head, ul, li, items: [], total: 0 };
+}
+const heading = grp => grp.head.textContent = `${grp.title}: ${grp.items.length} file${grp.items.length > 1 ? 's' : ''} · ${fmt(grp.total)}`
+  + (grp.discard ? ' · unfinished, connect to the same device again to carry on' : '');
+
+// A batch back from before a crash moves to the top once the other device offers it again.
+export function raise(grp) {
+  if (!grp?.discard) return;
+  grp.discard.remove();
+  grp.discard = null;
+  heading(grp);
+  $('log').prepend(grp.li);
 }
 
 export function addRow(grp, it) {
@@ -26,22 +37,26 @@ export function addRow(grp, it) {
   grp.items.push(it);
   it.grp = grp;
   grp.total += it.size;
-  grp.head.textContent = `${grp.title}: ${grp.items.length} file${grp.items.length > 1 ? 's' : ''} · ${fmt(grp.total)}`;
+  heading(grp);
   dirty.add(it);
   return li;
 }
 
 // Incoming files are ticked by default. The buttons act on the ticked ones: a file not received yet
-// is accepted, and one already received is saved again.
-export function askAccept(g, items, title = '↓ Incoming') {
+// is accepted, and one already received is saved again. A batch restored from before a crash (old) can be
+// discarded, which deletes what it stored.
+export function askAccept(g, items, title = '↓ Incoming', old = false) {
   let grp = groups.get(g);
-  if (!grp) {
+  if (grp) raise(grp);
+  else {
     grp = group(title);
+    if (old) grp.discard = el('button', { textContent: 'Discard', onclick: () => { grp.items.forEach(it => LIVE.includes(it.state) && cancel(it)); grp.li.remove(); } });
     const b = (label, mode) => el('button', { textContent: label, onclick: () => act(grp, mode) });
     grp.all = el('input', { type: 'checkbox', checked: true, onchange: () => grp.items.forEach(it => it.box.checked = grp.all.checked) });
     grp.btns = el('div', {}, el('label', {}, grp.all, ' Select all'), el('br'),
       b('Download', 'dl'), ' ', b('Download as .zip', 'zip'), ' ', ...(window.showDirectoryPicker ? [b('Save to folder…', 'dir'), ' '] : []), b('Decline', 'no'));
     grp.head.after(grp.btns);
+    if (grp.discard) grp.head.after(' ', grp.discard);
     groups.set(g, grp);
   }
   for (const it of items) {
