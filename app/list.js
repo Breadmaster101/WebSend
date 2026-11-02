@@ -10,13 +10,41 @@ import { say } from './connect.js';
 
 const groups = new Map();
 
-export function group(title) {
-  const head = el('span'), ul = el('ul'), li = el('li', {}, head, ul);
-  $('log').prepend(li);
-  return { title, head, ul, li, items: [], total: 0 };
+// New entries go to the top, under any incoming batch still waiting for an answer.
+function top(li) {
+  $('log').insertBefore(li, [...$('log').children].find(c => !c.classList.contains('ask')) ?? null);
 }
-const heading = grp => grp.head.textContent = `${grp.title}: ${grp.items.length} file${grp.items.length > 1 ? 's' : ''} · ${fmt(grp.total)}`
-  + (grp.discard ? ' · unfinished, connect to the same device again to carry on' : '');
+
+// Each batch is a card: a title that folds it away, its buttons, and a row per file.
+export function group(title, up) {
+  const li = el('li', { className: `card ${up ? 'out' : 'in'}` });
+  const head = el('button', { className: 'title', onclick: () => fold(grp, !li.classList.contains('folded')) });
+  const tools = el('span', { className: 'tools' }), ul = el('ul');
+  li.append(el('div', { className: 'bar' }, head, tools), ul);
+  top(li);
+  const grp = { title, up, head, tools, ul, li, items: [], total: 0 };
+  fold(grp, false);
+  return grp;
+}
+function fold(grp, on) {
+  grp.li.classList.toggle('folded', on);
+  grp.head.ariaExpanded = !on;
+}
+function heading(grp) {
+  const n = grp.items.length, files = `${n} file${n > 1 ? 's' : ''} · ${fmt(grp.total)}`;
+  grp.head.textContent = grp.over ? `✓ ${grp.up ? 'Sent' : 'Received'} · ${files}` : `${grp.title} · ${files}`
+    + (grp.discard ? ' · unfinished, connect to the same device again to carry on' : '');
+  if (grp.allRow) grp.allRow.hidden = n < 2;
+}
+
+// A batch folds away once nothing in it is left to do, and floats to the top while it waits for an answer.
+const OVER = ['done', 'declined', 'cancelled', 'error'];
+function settle(grp) {
+  const over = grp.items.every(it => OVER.includes(it.state)), asking = grp.items.some(it => it.state === 'pending');
+  if (over !== !!grp.over) { grp.over = over; if (over) fold(grp, true); heading(grp); }
+  grp.li.classList.toggle('ask', asking);
+  if (grp.no) grp.no.hidden = !asking;
+}
 
 // A batch back from before a crash moves to the top once the other device offers it again.
 export function raise(grp) {
@@ -24,20 +52,27 @@ export function raise(grp) {
   grp.discard.remove();
   grp.discard = null;
   heading(grp);
-  $('log').prepend(grp.li);
+  grp.li.remove();
+  top(grp.li);
 }
+
+const icon = (label, onclick) => el('button', { className: 'icon', ariaLabel: label, title: label, onclick });
 
 export function addRow(grp, it) {
   it.note = el('small');
   it.bar = el('progress', { max: 1, value: 0 });
-  it.pause = el('button', { onclick: () => hold(it, !it.held) });
-  it.stop = el('button', { textContent: 'Cancel', onclick: () => cancel(it) });
-  const li = el('li', {}, `${it.path} · ${fmt(it.size)} `, it.note, ' ', it.pause, ' ', it.stop, it.bar);
+  it.pause = icon('Pause', () => hold(it, !it.held));
+  it.stop = icon('Cancel', () => cancel(it));
+  it.stop.textContent = '✕';
+  it.acts = el('span', { className: 'acts' }, it.pause, it.stop);
+  const li = el('li', { className: 'file' }, el('span', { className: 'name', textContent: it.path }),
+    el('small', { textContent: fmt(it.size) }), it.note, it.acts, it.bar);
   grp.ul.append(li);
   grp.items.push(it);
   it.grp = grp;
   grp.total += it.size;
   heading(grp);
+  paint(it); // so it doesn't show blank buttons until the next tick
   dirty.add(it);
   return li;
 }
@@ -49,30 +84,39 @@ export function askAccept(g, items, title = '↓ Incoming', old = false) {
   let grp = groups.get(g);
   if (grp) raise(grp);
   else {
-    grp = group(title);
+    grp = group(title, false);
+    const b = (label, mode) => el('button', { textContent: label, onclick: () => { more.open = false; act(grp, mode); } });
+    // Download selected, with the other ways to save in a menu beside it. Decline sits apart, away from it.
+    const more = el('details', { className: 'more' }, el('summary', { ariaLabel: 'More ways to download', title: 'More ways to download', textContent: '▾' }),
+      el('div', {}, b('Download as .zip', 'zip'), ...(window.showDirectoryPicker ? [b('Save to folder…', 'dir')] : [])));
+    grp.no = b('Decline', 'no');
+    grp.go = [b('Download selected', 'dl'), more];
     if (old) grp.discard = el('button', { textContent: 'Discard', onclick: () => { grp.items.forEach(it => LIVE.includes(it.state) && cancel(it)); grp.li.remove(); } });
-    const b = (label, mode) => el('button', { textContent: label, onclick: () => act(grp, mode) });
-    grp.all = el('input', { type: 'checkbox', checked: true, onchange: () => grp.items.forEach(it => it.box.checked = grp.all.checked) });
-    grp.btns = el('div', {}, el('label', {}, grp.all, ' Select all'), el('br'),
-      b('Download', 'dl'), ' ', b('Download as .zip', 'zip'), ' ', ...(window.showDirectoryPicker ? [b('Save to folder…', 'dir'), ' '] : []), b('Decline', 'no'));
-    grp.head.after(grp.btns);
-    if (grp.discard) grp.head.after(' ', grp.discard);
+    grp.tools.append(...grp.discard ? [grp.discard] : [], grp.no, el('span', { className: 'split' }, ...grp.go));
+    grp.all = el('input', { type: 'checkbox', checked: true, onchange: () => { grp.items.forEach(it => it.box.checked = grp.all.checked); syncAll(grp); } });
+    grp.allRow = el('li', { className: 'all' }, el('label', {}, grp.all, 'Select all'));
+    grp.ul.append(grp.allRow);
     groups.set(g, grp);
   }
   for (const it of items) {
-    it.box = el('input', { type: 'checkbox', checked: true, onchange: () => syncAll(grp) });
-    it.save = el('button', { textContent: 'Save', onclick: () => respond([it], 'dl') });
+    it.box = el('input', { type: 'checkbox', checked: true, ariaLabel: 'Select ' + it.path, onchange: () => syncAll(grp) });
+    it.save = el('button', { textContent: 'Download', onclick: () => respond([it], 'dl') });
     addRow(grp, it).prepend(it.box);
-    it.note.after(' ', it.save);
+    it.acts.prepend(it.save);
   }
   syncAll(grp);
+  settle(grp);
 }
 
+// Nothing ticked leaves nothing for the buttons to act on.
 function syncAll(grp) {
   const n = grp.items.filter(it => it.box.checked).length;
   grp.all.checked = n === grp.items.length;
   grp.all.indeterminate = n > 0 && n < grp.items.length;
+  grp.go[0].disabled = grp.no.disabled = !n;
+  grp.go[1].classList.toggle('off', !n);
 }
+document.addEventListener('click', e => document.querySelectorAll('details.more[open]').forEach(d => d.contains(e.target) || (d.open = false)));
 
 async function act(grp, mode) {
   const sel = grp.items.filter(it => it.box.checked);
@@ -100,15 +144,18 @@ async function respond(items, mode) {
   return true;
 }
 
-const LABEL = { queued: 'waiting for connection', offered: 'waiting for them to accept', pending: '', declined: 'declined', error: 'failed', cancelled: 'cancelled', missing: 'add it again to carry on' };
+const LABEL = { queued: 'Waiting for connection', offered: 'Waiting for them to accept', pending: '', declined: 'Declined', error: 'Failed', cancelled: 'Cancelled', missing: 'Add it again to carry on' };
 function paint(it) {
   const done = it.state === 'done', live = LIVE.includes(it.state);
   if (it.save) it.save.hidden = it.state !== 'pending';
   it.pause.hidden = !live;
   it.stop.hidden = !live && it.state !== 'missing';
-  it.pause.textContent = it.held ? 'Resume' : 'Pause';
+  it.pause.textContent = it.held ? '▶︎' : '⏸︎';
+  it.pause.title = it.pause.ariaLabel = it.held ? 'Resume' : 'Pause';
   it.bar.value = done ? 1 : it.size ? it.n / it.size : 0;
-  it.note.textContent = done ? (it.up ? 'sent ✓' : 'received ✓') : live && it.held ? 'paused'
+  it.bar.hidden = !live;
+  it.note.className = done ? 'ok' : ['error', 'cancelled', 'declined'].includes(it.state) ? 'bad' : '';
+  it.note.textContent = done ? (it.up ? '✓ Sent' : '✓ Received') : live && it.held ? 'Paused'
     : LABEL[it.state] ?? Math.floor(it.bar.value * 100) + '%' + pace(it.size - it.n, it.bps, it.ticks);
 }
 
@@ -153,7 +200,9 @@ function overall() {
 
 setInterval(() => {
   overall();
-  dirty.forEach(it => { paint(it); remember(it); });
+  const touched = new Set();
+  dirty.forEach(it => { paint(it); remember(it); touched.add(it.grp); });
+  touched.forEach(settle);
   dirty.clear();
   if (connected) say(stall ? 'Connection interrupted. Trying to reconnect…' : checked && !theyOk ? 'Connected. Waiting for the other device to confirm the number…'
     : 'Connected' + route, !!stall);
@@ -169,18 +218,30 @@ export function clearFiles() {
   $('log').replaceChildren();
 }
 
+// Tabs above the list show everything, or only what was received or sent.
+for (const t of $('tabs').children) t.onclick = () => {
+  $('log').dataset.f = t.dataset.f;
+  for (const o of $('tabs').children) o.ariaSelected = o === t;
+};
+
 // ---------- Text ----------
-function textEntry(dir, v) {
+// Texts show as chat bubbles: sent ones on the right, received ones on the left.
+function textEntry(up, v) {
   const body = /^https?:\/\/\S+$/.test(v) ? el('a', { href: v, textContent: v, target: '_blank', rel: 'noopener noreferrer' }) : el('pre', { textContent: v });
-  $('log').prepend(el('li', {}, `${dir} Text `, el('button', { textContent: 'Copy', onclick: () => navigator.clipboard?.writeText(v) }), el('br'), body));
+  const copy = icon('Copy', () => navigator.clipboard?.writeText(v).then(() => {
+    copy.textContent = '✓';
+    setTimeout(() => copy.textContent = '⧉', 1500);
+  }));
+  copy.textContent = '⧉';
+  top(el('li', { className: `text ${up ? 'out' : 'in'}` }, el('div', { className: 'bubble' }, el('small', { textContent: up ? 'You sent' : 'Received' }), body, copy)));
 }
-Object.assign(on, { text({ v }) { textEntry('↓', String(v)); } });
+Object.assign(on, { text({ v }) { textEntry(false, String(v)); } });
 $('textForm').onsubmit = e => {
   e.preventDefault();
   const v = $('text').value;
   if (!v || !ready()) return;
   send({ t: 'text', v });
-  textEntry('↑', v);
+  textEntry(true, v);
   $('text').value = '';
 };
 
@@ -194,7 +255,7 @@ function addFiles(list) { // [[File, relativePath]]
     if (old) return Object.assign(old, { file, state: 'queued' }), dirty.add(old), old;
     const o = { id: rid(), file, path, size: file.size, mod: file.lastModified, dir: TAB, n: 0, state: 'queued', up: true };
     out.set(o.id, o);
-    addRow(grp ||= group('↑ Sending'), o);
+    addRow(grp ||= group('↑ Sending', true), o);
     return o;
   });
   if (ready()) offer(fresh);

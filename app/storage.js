@@ -86,7 +86,7 @@ function restore(recs) {
     else ins.push({ ...r, n: r.k, v: r.k, state: 'receiving', to: 'disk', held: false, bad: 0, rec: true, segs: new Map(r.k ? [[0, { at: 0, n: r.k, ok: true }]] : []) });
   }
   if (outs.length) {
-    const grp = group('↑ Unfinished: add these files again to carry on');
+    const grp = group('↑ Unfinished: add these files again to carry on', true);
     outs.forEach(o => { out.set(o.id, o); addRow(grp, o); });
   }
   // Downloads go back into their own batch, which moves to the top once the other device offers them again.

@@ -27,8 +27,8 @@ export async function finish(it) {
   it.state = 'done';
   dirty.add(it);
   if (it.blob) {
-    it.a = el('a', { href: URL.createObjectURL(it.blob), download: it.path.replace(/[/\\]/g, '_'), textContent: 'Save', onclick: savedOnce });
-    it.note.after(' ', it.a);
+    it.a = el('a', { href: URL.createObjectURL(it.blob), download: it.path.replace(/[/\\]/g, '_'), className: 'btn', textContent: 'Download', onclick: savedOnce });
+    it.save.after(it.a);
     if (it.auto) it.a.click();
   }
   zipReady(it.grp);
@@ -59,16 +59,16 @@ async function saveZip(grp, got) {
   const name = tops.size === 1 && /[/\\]/.test(got[0].path) ? [...tops][0] : 'websend';
   const files = got.map(it => ({ name: it.path.split(/[/\\]/).filter(s => s && s !== '.' && s !== '..').join('/') || 'file', input: it.blob }));
   // The archive stays as a link too: browsers may block a download the page starts by itself.
-  const show = x => { if (grp.zipOut?.href) URL.revokeObjectURL(grp.zipOut.href); grp.zipOut ? grp.zipOut.replaceWith(x) : grp.btns.append(' ', x); grp.zipOut = x; };
-  show(el('small', { textContent: 'Zipping…' }));
+  const show = x => { if (grp.zipOut?.href) URL.revokeObjectURL(grp.zipOut.href); grp.zipOut ? grp.zipOut.replaceWith(x) : grp.ul.before(x); grp.zipOut = x; };
+  show(el('small', { className: 'zip', textContent: 'Zipping…' }));
   if (grp.zipDisk) rpc('rm', grp.zipDisk).catch(() => {}); // the archive from last time
   try {
     const zip = downloadZip(files);
     const blob = await disk ? await spool(zip.body, grp.zipDisk = { dir: TAB, name: 'zip-' + rid() }) : await zip.blob();
-    const a = el('a', { href: URL.createObjectURL(blob), download: name + '.zip', textContent: `Save ${name}.zip`, onclick: savedOnce });
+    const a = el('a', { href: URL.createObjectURL(blob), download: name + '.zip', className: 'btn zip', textContent: `Download ${name}.zip`, onclick: savedOnce });
     show(a);
     a.click();
-  } catch (e) { show(el('small', { textContent: 'Zip failed: ' + e.message })); log('Zip failed: ' + why(e), 'err'); }
+  } catch (e) { show(el('small', { className: 'zip', textContent: 'Zip failed: ' + e.message })); log('Zip failed: ' + why(e), 'err'); }
 }
 
 // Writes a stream into browser storage a segment at a time, and returns it as a file.
