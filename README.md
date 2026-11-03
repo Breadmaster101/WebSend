@@ -17,7 +17,7 @@ Each time, the choice is one of:
 
 The invite and the reply can use different methods. For example, send a PC's invite to your phone as a link, then let the phone chirp its reply back. Sound works best with the devices close together and the volume up.
 
-Once connected, check both screens show the same 6-digit number and tap **Yes, it matches**. Either side can then send files, folders or text, by picking them, dropping them on the page or pasting them (a pasted screenshot is sent as an image; pasted text goes into the text box to check before sending). The receiver ticks the files they want (all are ticked to start, with **Select all** to toggle) and taps **Download selected** or **Decline**. The menu beside **Download selected** also has **Download as .zip** (keeps folder structure) and **Save to folder…** (Chrome/Edge desktop). Each file also has its own **Download** button. Unticked files stay available, and received ones can be downloaded again the same way. While a file is on its way, either side can **Pause**, **Resume** or **Cancel** it. Each file shows its speed and time left, and the top of the page (and the tab's title) shows how far the whole batch has got.
+Once connected, check both screens show the same 6-digit number and tap **Yes, it matches**. Either side can then send files, folders or text, by picking them, dropping them on the page or pasting them (a pasted screenshot is sent as an image; pasted text goes into the text box to check before sending). The receiver ticks the files they want (all are ticked to start, with **Select all** to toggle) and taps **Download all**, **Download all as .zip** (keeps folder structure), **Save all to folder…** (Chrome/Edge desktop) or **Decline**. With only some ticked, the buttons say "selected" instead of "all". Each file also has its own **Download** button. Unticked files stay available, and received ones can be downloaded again the same way. While a file is on its way, either side can **Pause**, **Resume** or **Cancel** it. Each file shows its speed and time left, and the top of the page (and the tab's title) shows how far the whole batch has got.
 
 If the connection drops, connect again. Unfinished transfers resume where they stopped, even after a reload on the sending device (add the files again) or a crash on the receiving one. Reloading or closing the receiving tab deletes its unfinished downloads, so those start over.
 
@@ -45,7 +45,7 @@ Any static host over HTTPS (GitHub Pages, Cloudflare Pages, Netlify). Upload `in
 
 ## Storage
 
-Received files are written to the browser's private storage (the origin private file system) as they arrive, so a big file never has to fit in memory. `store.js` does the writing in a worker, and a small IndexedDB note records how much of each download is stored, which is what lets a download resume after a crash. Browsers' own estimates of free space aren't reliable (some report 0 B), so the receiver doesn't refuse on them; if storage really fills up, the download stops and says so (and suggests **Save to folder…** where available).
+Received files are written to the browser's private storage (the origin private file system) as they arrive, so a big file never has to fit in memory. `store.js` does the writing in a worker, and a small IndexedDB note records how much of each download is stored, which is what lets a download resume after a crash. Browsers' own estimates of free space aren't reliable (some report 0 B), so the receiver doesn't refuse on them; if storage really fills up, the download stops and says so (and suggests saving to a folder where available).
 
 A website can't run while it's closed, so WebSend keeps that storage short-lived instead:
 
@@ -79,7 +79,7 @@ Common findings: no public address (the network blocks UDP to STUN), a different
 
 - Peers behind strict NAT (some mobile carriers and corporate networks) can't connect directly. There's no relay by design. Same Wi-Fi always works.
 - VPNs such as Cloudflare WARP block connections from other networks. Turn the VPN off on that device before connecting; the connection log flags WARP addresses.
-- Without **Save to folder…**, folder paths are flattened into file names (`dir_sub_file.txt`) unless you use **Download as .zip**.
+- Without **Save all to folder…**, folder paths are flattened into file names (`dir_sub_file.txt`) unless you use **Download all as .zip**.
 - After a reload, the sending device has to add unfinished files again (browsers don't let a page reopen a file by itself). A file is matched by its path, size and modified time. An unfinished download resumes only after its tab crashed or was discarded, for up to a day; reloading or closing it deletes the download.
 - Both devices need the same version of WebSend. If one has an old copy open, reload it.
 - Connect by sound needs a working speaker and microphone on both devices. Very loud rooms, or a laptop whose microphone filters out tones, may need another method instead.

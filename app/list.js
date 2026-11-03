@@ -85,14 +85,11 @@ export function askAccept(g, items, title = '↓ Incoming', old = false) {
   if (grp) raise(grp);
   else {
     grp = group(title, false);
-    const b = (label, mode) => el('button', { textContent: label, onclick: () => { more.open = false; act(grp, mode); } });
-    // Download selected, with the other ways to save in a menu beside it. Decline sits apart, away from it.
-    const more = el('details', { className: 'more' }, el('summary', { ariaLabel: 'More ways to download', title: 'More ways to download', textContent: '▾' }),
-      el('div', {}, b('Download as .zip', 'zip'), ...(window.showDirectoryPicker ? [b('Save to folder…', 'dir')] : [])));
-    grp.no = b('Decline', 'no');
-    grp.go = [b('Download selected', 'dl'), more];
+    const b = (mode, props) => el('button', { onclick: () => act(grp, mode), ...props });
+    grp.go = { dl: b('dl'), zip: b('zip'), ...window.showDirectoryPicker && { dir: b('dir') } };
+    grp.no = b('no', { textContent: 'Decline', className: 'no' }); // kept apart from the downloads, at the far end
     if (old) grp.discard = el('button', { textContent: 'Discard', onclick: () => { grp.items.forEach(it => LIVE.includes(it.state) && cancel(it)); grp.li.remove(); } });
-    grp.tools.append(...grp.discard ? [grp.discard] : [], grp.no, el('span', { className: 'split' }, ...grp.go));
+    grp.tools.append(...grp.discard ? [grp.discard] : [], ...Object.values(grp.go), grp.no);
     grp.all = el('input', { type: 'checkbox', checked: true, onchange: () => { grp.items.forEach(it => it.box.checked = grp.all.checked); syncAll(grp); } });
     grp.allRow = el('li', { className: 'all' }, el('label', {}, grp.all, 'Select all'));
     grp.ul.append(grp.allRow);
@@ -100,7 +97,7 @@ export function askAccept(g, items, title = '↓ Incoming', old = false) {
   }
   for (const it of items) {
     it.box = el('input', { type: 'checkbox', checked: true, ariaLabel: 'Select ' + it.path, onchange: () => syncAll(grp) });
-    it.save = el('button', { textContent: 'Download', onclick: () => respond([it], 'dl') });
+    it.save = el('button', { textContent: 'Download', className: 'save', onclick: () => respond([it], 'dl') });
     addRow(grp, it).prepend(it.box);
     it.acts.prepend(it.save);
   }
@@ -108,15 +105,19 @@ export function askAccept(g, items, title = '↓ Incoming', old = false) {
   settle(grp);
 }
 
-// Nothing ticked leaves nothing for the buttons to act on.
+// The buttons say what they'll act on, and nothing ticked leaves them nothing. A batch of one has no need for ticks
+// or a second Download on its row.
 function syncAll(grp) {
-  const n = grp.items.filter(it => it.box.checked).length;
-  grp.all.checked = n === grp.items.length;
-  grp.all.indeterminate = n > 0 && n < grp.items.length;
-  grp.go[0].disabled = grp.no.disabled = !n;
-  grp.go[1].classList.toggle('off', !n);
+  const n = grp.items.filter(it => it.box.checked).length, total = grp.items.length;
+  grp.all.checked = n === total;
+  grp.all.indeterminate = n > 0 && n < total;
+  grp.li.classList.toggle('solo', total === 1);
+  const which = total === 1 ? '' : n === total ? ' all' : ' selected';
+  grp.go.dl.textContent = `Download${which}`;
+  grp.go.zip.textContent = `Download${which} as .zip`;
+  if (grp.go.dir) grp.go.dir.textContent = `Save${which} to folder…`;
+  [...Object.values(grp.go), grp.no].forEach(b => b.disabled = !n);
 }
-document.addEventListener('click', e => document.querySelectorAll('details.more[open]').forEach(d => d.contains(e.target) || (d.open = false)));
 
 async function act(grp, mode) {
   const sel = grp.items.filter(it => it.box.checked);

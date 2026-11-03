@@ -19,11 +19,11 @@ export let moved = 0; // bytes sent and received so far, for the speed
 // Files keep the batch they were first offered in (g), so an offer made again after a reconnect lands them in the
 // same group on the other device.
 export function offer(list) {
-  const gs = new Map();
+  const gs = new Map(), batch = rid();
   for (const o of list) {
     o.state = 'offered';
     dirty.add(o);
-    gs.set(o.g ||= rid(), [...gs.get(o.g) || [], o]);
+    gs.set(o.g ||= batch, [...gs.get(o.g) || [], o]);
   }
   gs.forEach((os, g) => sendIn({ t: 'offer', g }, 'files', os.map(({ id, path, size, held }) => ({ id, path, size, held: !!held }))));
 }
